@@ -1,0 +1,806 @@
+---
+title: "Mapping"
+author: "Joe Turner"
+date: "30 March 2017"
+output: pdf_document
+---
+
+```{read in data and packages, include=FALSE}
+
+library(rpart)
+library(tree)
+library(randomForest)
+library(e1071)
+library(plyr)
+library(vegan)
+library(doBy)
+library(rgdal)
+library(clustsig)
+library(gdata)
+library(ggplot2)
+library(scales)
+library(ggrepel)
+library(RColorBrewer)
+library(reshape2)
+library(reshape)
+library(grid)
+library(dplR)
+library(gridExtra)
+library(Hmisc)
+library(corrplot)
+library(PerformanceAnalytics)
+library(raster)
+st.err <- function(x) {sd(x)/sqrt(length(x))}
+
+setwd("C:/OneDrive/C3_Map")
+GT <- read.csv("8_GIS_GT_Intercept_5m_9999_Removed.csv", header = TRUE)
+Helby <- read.csv("9_HelbyBanks_GT_5m.csv", header = TRUE)
+Tanta <- read.csv("10_Tantabiddi_GT_5m.csv", header = TRUE)
+Mgrove <- read.csv("11_Mangrove_GT_5m.csv", header = TRUE)
+South <- read.csv("12_SouthSite_GT_5m.csv", header = TRUE)
+
+setwd("C:/OneDrive/C3_Map/PointsForPrediction")
+
+HBpoints <- read.csv("Helby_Predict_5m.csv", header = TRUE)
+TBpoints <- read.csv("Tanta_Predict_5m.csv", header = TRUE)
+MGpoints <- read.csv("Mangrove_Predict_5m.csv", header = TRUE)
+SSpoints <- read.csv("South_Predict_5m.csv", header = TRUE)
+points1 <- read.csv("AllSites_Predict_5m_1.csv", header = TRUE)
+points2 <- read.csv("AllSites_Predict_5m_2.csv", header = TRUE)
+points3 <- read.csv("AllSites_Predict_5m_3.csv", header = TRUE)
+
+
+setwd("C:/OneDrive/C3_Map")
+
+```
+
+```{r correlation matrix}
+
+# http://www.sthda.com/english/wiki/correlation-matrix-a-quick-start-guide-to-analyze-format-and-visualize-a-correlation-matrix-using-r-software
+
+cor <- cor(GT[,32:62])
+round(cor, 2)
+corrplot(cor, method="number")
+corrplot(cor, type="lower")
+
+# can caluculate a correlation matrix with significance levels
+
+cor2 <- rcorr(as.matrix(GT[,32:62]))
+cor2
+# Extract the correlation coefficients
+cor2$r
+# Extract p-values
+cor2$P
+
+# flattenCorrMatrix
+# ++++++++++++++++++++++++++++
+# cormat : matrix of the correlation coefficients
+# pmat : matrix of the correlation p-values
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+    )
+}
+
+res2<-rcorr(as.matrix(GT[,32:62]))
+CorMatrix <- flattenCorrMatrix(res2$r, res2$P)
+write.csv(CorMatrix, "8_Correlation_Matrix.csv")
+
+# Insignificant correlation are left blank
+corrplot(res2$r, type="upper", order="hclust", 
+         p.mat = res2$P, sig.level = 0.01, insig = "blank")
+
+
+# draw scatter plots
+chart.Correlation(GT[,32:62], histogram=TRUE, pch=19)
+
+```
+
+
+```{r select training and evaluation data}
+
+set.seed(387)  
+
+# For all data
+size.modeldata <- round(0.75 * nrow(GT))
+model  <- GT[sample ( 1:nrow(GT), size.modeldata, replace = FALSE),]
+test <- GT[- c( sample ( 1:nrow(GT), size.modeldata, replace = FALSE) ),]
+
+# For Helby Banks
+HBsize.modeldata <- round(0.75 * nrow(Helby))
+HBmodel  <- Helby[sample ( 1:nrow(Helby), HBsize.modeldata, replace = FALSE),]
+HBtest <- Helby[- c( sample ( 1:nrow(Helby), HBsize.modeldata, replace = FALSE) ),]
+
+# For Tantabiddi
+TBsize.modeldata <- round(0.75 * nrow(Tanta))
+TBmodel  <- Tanta[sample ( 1:nrow(Tanta), TBsize.modeldata, replace = FALSE),]
+TBtest <- Tanta[- c( sample ( 1:nrow(Tanta), TBsize.modeldata, replace = FALSE) ),]
+
+# For Mangrove
+MGsize.modeldata <- round(0.75 * nrow(Mgrove))
+MGmodel  <- Mgrove[sample ( 1:nrow(Mgrove), MGsize.modeldata, replace = FALSE),]
+MGtest <- Mgrove[- c( sample ( 1:nrow(Mgrove), MGsize.modeldata, replace = FALSE) ),]
+
+# For Southern Site
+SSsize.modeldata <- round(0.75 * nrow(South))
+SSmodel  <- South[sample ( 1:nrow(South), SSsize.modeldata, replace = FALSE),]
+SStest <- South[- c( sample ( 1:nrow(South), SSsize.modeldata, replace = FALSE) ),]
+
+
+```
+
+
+```{r tree classification}
+
+set.seed(387)
+
+##################################
+#### Level 1 - HARD SUBSTRATE ####
+##################################
+
+Lv1Hard.tree <- tree(as.factor(Lv1_Hard) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= model, na.action = na.exclude, method = "class")
+
+
+plot(Lv1Hard.tree); text(Lv1Hard.tree,cex=0.5)
+summary(Lv1Hard.tree) 
+
+# Highly correlated variables removed
+# hyp removed as well as curv_plan, curv_prof, east, mean5, mean10, std10, BPI_F_15, range3, BPI_B_100
+# BPI_F_25, range5, std5, std25
+
+Lv1Hard.tree <- tree(as.factor(Lv1_Hard) ~ curv +	slope +	mean3 +
+                       mean25 +	std3  +	range10 +	range25 +
+                       rugosity +	north +	BPI_F_10  +
+                       BPI_B_50 + BPI_B_250 +	Depth,
+                     data= model, na.action = na.exclude, method = "class")
+
+# Select the best model variables
+Lv1Hard.tree <- tree(as.factor(Lv1_Hard) ~ std5 + BScatter + std25 + mean3 + mean25 + range25 + BPI_B_50,
+                        data=model, method = "class")
+summary(Lv1Hard.tree) # MISCLASSIFICATION RATE 16.5%
+
+
+###########################################
+## Test at each site level individually ##
+###########################################
+
+#################
+## Helby Banks ##
+#################
+
+HBLv1Hard.tree <- tree(as.factor(Lv1_Hard) ~ Depth + BScatter + curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 + 
+                         mean10 + mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	
+                         range25 + hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	
+                         BPI_F_15 + BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250,
+                     data= HBmodel, na.action = na.exclude, method = "class")
+plot(HBLv1Hard.tree); text(HBLv1Hard.tree,cex=0.5)
+summary(HBLv1Hard.tree)
+
+# Select the best model variables
+HBLv1Hard.tree <- tree(as.factor(Lv1_Hard) ~ range5 + mean25 + BScatter + Depth + range25 + BPI_B_100 + BPI_B_250 + BPI_B_50,
+                        data=HBmodel, method = "class")
+summary(HBLv1Hard.tree) # MISCLASSIFICATION RATE 8.0%
+
+
+
+################
+## Tantabiddi ##
+################
+
+TBLv1Hard.tree <- tree(as.factor(Lv1_Hard) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= TBmodel, na.action = na.exclude, method = "class")
+
+plot(TBLv1Hard.tree); text(TBLv1Hard.tree,cex=0.5)
+summary(TBLv1Hard.tree)
+
+# Select the best model variables
+TBLv1Hard.tree <- tree(as.factor(Lv1_Hard) ~ mean25 + mean3 + BPI_B_250 + range10 + std25 + std5 + range25 + BScatter +
+                         range5,
+                        data=TBmodel, method = "class")
+
+summary(TBLv1Hard.tree) # MISCLASSIFICATION RATE 6.6%
+
+
+##############
+## Mangrove ##
+##############
+
+MGLv1Hard.tree <- tree(as.factor(Lv1_Hard) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= MGmodel, na.action = na.exclude, method = "class")
+
+plot(MGLv1Hard.tree); text(MGLv1Hard.tree,cex=0.5)
+summary(MGLv1Hard.tree)
+
+# Select the best model variables
+MGLv1Hard.tree <- tree(as.factor(Lv1_Hard) ~ mean5 + rugosity + hyp25 + BPI_B_50 + BPI_B_250 + BScatter + hyp5 +
+                         std25 + std10 + std5,
+                        data=MGmodel, method = "class")
+
+summary(MGLv1Hard.tree) # MISCLASSIFICATION RATE 5.5%
+
+
+
+###################
+## Southern Site ##
+###################
+
+SSLv1Hard.tree <- tree(as.factor(Lv1_Hard) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= SSmodel, na.action = na.exclude, method = "class")
+
+plot(SSLv1Hard.tree); text(SSLv1Hard.tree,cex=0.5)
+summary(SSLv1Hard.tree)
+
+# Select the best model variables
+SSLv1Hard.tree <- tree(as.factor(Lv1_Hard) ~ std10 + BPI_B_100 + curv + std25 + BPI_B_50 + mean3 + range5 + slope,
+                        data=SSmodel, method = "class")
+
+summary(SSLv1Hard.tree) # MISCLASSIFICATION RATE 0.28%
+
+
+
+########################################################
+## Investigating and Pruning the classification trees ##
+########################################################
+
+###############
+## All sites ##
+###############
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        Lv1Hard.fit1  <- cv.tree(Lv1Hard.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(Lv1Hard.fit1)
+        summary(Lv1Hard.fit1)
+        png(file = paste('AllSites_Lv1Hard_Misclassification',i, '.png', sep = ''),
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(Lv1Hard.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 4    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        Lv1Hard.prune <- prune.misclass(Lv1Hard.tree, best = TreeSize) 
+        plot(Lv1Hard.prune); text(Lv1Hard.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(Lv1Hard.prune))
+        png(file = paste('AllSites_Lv1Hard_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(Lv1Hard.prune); text(Lv1Hard.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 16.54% with 10 trees
+Lv1Hard.prune <- prune.misclass(Lv1Hard.tree, best = 8)         # choose best tree size and add value in!!!
+plot(Lv1Hard.prune); text(Lv1Hard.prune,cex=0.8)
+
+Lv1Hard.predict <- predict(Lv1Hard.prune, test, type = c("vector"))
+Lv1Hard.predict <- as.data.frame(Lv1Hard.predict [,2])
+out.predict.Lv1Hard <- as.data.frame(cbind(test$Long, test$Lat, 
+   test$Lv1_Hard, Lv1Hard.predict))
+names(out.predict.Lv1Hard) <- c("X", "Y", "Lv1Hard.test", "Lv1Hard.predicted")
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Figures/FinalTree")
+png(file = 'AllSites_Lv1Hard_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(Lv1Hard.prune); text(Lv1Hard.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/FinalTree/All_Sites_Lv1Hard_prune.txt")
+Lv1Hard.prune 
+sink()
+
+
+###############################################
+#### Test at each site level individually ####
+###############################################
+
+#####################
+#### Helby Banks ####
+#####################
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        HBLv1Hard.fit1  <- cv.tree(HBLv1Hard.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(HBLv1Hard.fit1)
+        summary(HBLv1Hard.fit1)
+        png(file = paste('HB_Lv1Hard_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(HBLv1Hard.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        HBLv1Hard.prune <- prune.misclass(HBLv1Hard.tree, best = TreeSize) 
+        plot(HBLv1Hard.prune); text(HBLv1Hard.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(HBLv1Hard.prune))
+        png(file = paste('HB_Lv1Hard_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(HBLv1Hard.prune); text(HBLv1Hard.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 8.7% with 10 trees
+HBLv1Hard.prune <- prune.misclass(HBLv1Hard.tree, best = 10)         # choose best tree size and add value in!!!
+plot(HBLv1Hard.prune); text(HBLv1Hard.prune,cex=0.8)
+
+HBLv1Hard.predict <- predict(HBLv1Hard.prune, HBtest, type = c("vector"))
+HBLv1Hard.predict <- as.data.frame(HBLv1Hard.predict [,2])
+out.predict.HBLv1Hard <- as.data.frame(cbind(HBtest$Long, HBtest$Lat, 
+   HBtest$Lv1_Hard, HBLv1Hard.predict))
+names(out.predict.HBLv1Hard) <- c("X", "Y", "Lv1Hard.test", "Lv1Hard.predicted")
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Figures/FinalTree")
+png(file = 'HB_Lv1Hard_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(HBLv1Hard.prune); text(HBLv1Hard.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/FinalTree/HB_Lv1Hard_prune.txt")
+HBLv1Hard.prune 
+sink()
+
+
+####################
+#### Tantabiddi ####
+####################
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        TBLv1Hard.fit1  <- cv.tree(TBLv1Hard.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(TBLv1Hard.fit1)
+        summary(TBLv1Hard.fit1)
+        png(file = paste('TB_Lv1Hard_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(TBLv1Hard.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        TBLv1Hard.prune <- prune.misclass(TBLv1Hard.tree, best = TreeSize) 
+        plot(TBLv1Hard.prune); text(TBLv1Hard.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(TBLv1Hard.prune))
+        png(file = paste('TB_Lv1Hard_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(TBLv1Hard.prune); text(TBLv1Hard.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 7.1% with 12 trees
+TBLv1Hard.prune <- prune.misclass(TBLv1Hard.tree, best = 12)         # choose best tree size and add value in!!!
+plot(TBLv1Hard.prune); text(TBLv1Hard.prune,cex=0.8)
+
+TBLv1Hard.predict <- predict(TBLv1Hard.prune, TBtest, type = c("vector"))
+TBLv1Hard.predict <- as.data.frame(TBLv1Hard.predict [,2])
+out.predict.TBLv1Hard <- as.data.frame(cbind(TBtest$Long, TBtest$Lat, 
+   TBtest$Lv1_Hard, TBLv1Hard.predict))
+names(out.predict.TBLv1Hard) <- c("X", "Y", "Lv1Hard.test", "Lv1Hard.predicted")
+
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Figures/FinalTree")
+png(file = 'TB_Lv1Hard_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(TBLv1Hard.prune); text(TBLv1Hard.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/FinalTree/TB_Lv1Hard_prune.txt")
+TBLv1Hard.prune 
+sink()
+
+
+
+##################
+#### Mangrove ####
+##################
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        MGLv1Hard.fit1  <- cv.tree(MGLv1Hard.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(MGLv1Hard.fit1)
+        summary(MGLv1Hard.fit1)
+        png(file = paste('MG_Lv1Hard_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(MGLv1Hard.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        MGLv1Hard.prune <- prune.misclass(MGLv1Hard.tree, best = TreeSize) 
+        plot(MGLv1Hard.prune); text(MGLv1Hard.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(MGLv1Hard.prune))
+        png(file = paste('MG_Lv1Hard_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(MGLv1Hard.prune); text(MGLv1Hard.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 8.3% with 8 trees
+MGLv1Hard.prune <- prune.misclass(MGLv1Hard.tree, best = 8)         # choose best tree size and add value in!!!
+plot(MGLv1Hard.prune); text(MGLv1Hard.prune,cex=0.8)
+
+MGLv1Hard.predict <- predict(MGLv1Hard.prune, MGtest, type = c("vector"))
+MGLv1Hard.predict <- as.data.frame(MGLv1Hard.predict [,2])
+out.predict.MGLv1Hard <- as.data.frame(cbind(MGtest$Long, MGtest$Lat, 
+   MGtest$Lv1_Hard, MGLv1Hard.predict))
+names(out.predict.MGLv1Hard) <- c("X", "Y", "Lv1Hard.test", "Lv1Hard.predicted")
+
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Figures/FinalTree")
+png(file = 'MG_Lv1Hard_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(MGLv1Hard.prune); text(MGLv1Hard.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/FinalTree/MG_Lv1Hard_prune.txt")
+MGLv1Hard.prune 
+sink()
+
+
+#######################
+#### Southern Site ####
+######################
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        SSLv1Hard.fit1  <- cv.tree(SSLv1Hard.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(SSLv1Hard.fit1)
+        summary(SSLv1Hard.fit1)
+        png(file = paste('SS_Lv1Hard_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(SSLv1Hard.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Figures/TreeSize")
+
+par(mfrow=c(2,2)) ## makes graphs appear in 2 rows and 2 columns - 4 per page
+
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        SSLv1Hard.prune <- prune.misclass(SSLv1Hard.tree, best = TreeSize) 
+        plot(SSLv1Hard.prune); text(SSLv1Hard.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(SSLv1Hard.prune))
+        png(file = paste('SS_Lv1Hard_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(SSLv1Hard.prune); text(SSLv1Hard.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 1.8% with 12 trees
+SSLv1Hard.prune <- prune.misclass(SSLv1Hard.tree, best = 12)         # choose best tree size and add value in!!!
+plot(SSLv1Hard.prune); text(SSLv1Hard.prune,cex=0.8)
+
+SSLv1Hard.predict <- predict(SSLv1Hard.prune, SStest, type = c("vector"))
+SSLv1Hard.predict <- as.data.frame(SSLv1Hard.predict [,2])
+out.predict.SSLv1Hard <- as.data.frame(cbind(SStest$Long, SStest$Lat, 
+   SStest$Lv1_Hard, SSLv1Hard.predict))
+names(out.predict.SSLv1Hard) <- c("X", "Y", "Lv1Hard.test", "Lv1Hard.predicted")
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Figures/FinalTree")
+png(file = 'SS_Lv1Hard_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(SSLv1Hard.prune); text(SSLv1Hard.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/FinalTree/SS_Lv1Hard_prune.txt")
+SSLv1Hard.prune 
+sink()
+
+
+
+#########################################################
+## Predict Level 1 CATAMI Hard Substrate for each site ##
+#########################################################
+
+
+#########################
+## Helby Banks Predict ##
+#########################
+
+HB.Lv1Hard.rs.predict <- predict(HBLv1Hard.prune, HBpoints, type = c("vector"))
+HB.Lv1Hard.predict <- as.data.frame(HB.Lv1Hard.rs.predict[,2])
+predHB.Lv1Hard <- as.data.frame(cbind(HBpoints$Long, HBpoints$Lat,  HB.Lv1Hard.predict))
+names(predHB.Lv1Hard) <- c("X","Y", "predLv1Hard")
+
+
+#######################
+## Tantabiddi Predict ##
+#######################
+
+TB.Lv1Hard.rs.predict <- predict(TBLv1Hard.prune, TBpoints, type = c("vector"))
+TB.Lv1Hard.predict <- as.data.frame(TB.Lv1Hard.rs.predict[,2])
+predTB.Lv1Hard <- as.data.frame(cbind(TBpoints$Long, TBpoints$Lat,  TB.Lv1Hard.predict))
+names(predTB.Lv1Hard) <- c("X", "Y", "predLv1Hard")
+
+#######################
+## Mangrove Predict ##
+######################
+
+MG.Lv1Hard.rs.predict <- predict(MGLv1Hard.prune, MGpoints, type = c("vector"))
+MG.Lv1Hard.predict <- as.data.frame(MG.Lv1Hard.rs.predict[,2])
+predMG.Lv1Hard <- as.data.frame(cbind(MGpoints$Lat, MGpoints$Long, MG.Lv1Hard.predict))
+names(predMG.Lv1Hard) <- c("Y", "X", "predLv1Hard")
+
+###########################
+## Southern Site Predict ##
+###########################
+
+SS.Lv1Hard.rs.predict <- predict(SSLv1Hard.prune, SSpoints, type = c("vector"))
+SS.Lv1Hard.predict <- as.data.frame(SS.Lv1Hard.rs.predict[,2])
+predSS.Lv1Hard <- as.data.frame(cbind(SSpoints$Lat, SSpoints$Long, SS.Lv1Hard.predict))
+names(predSS.Lv1Hard) <- c("Y", "X", "predLv1Hard")
+
+
+#########################
+## Export to ASCII ##
+#########################
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Lv1Outputs")
+
+# Convert to SpatialPoinDataFraMe
+coordinates(predHB.Lv1Hard) <- ~X+Y
+# Calculate the extent of the observations
+extHB <- extent(predHB.Lv1Hard)
+# Get the distance between points
+table(diff(predHB.Lv1Hard@coords[,1]))
+rHB <- raster(ext=extHB,res=0.0000483000000031097)
+# Final raster
+to_asciiHB <- rasterize(predHB.Lv1Hard, rHB, 'predLv1Hard')
+# Write raster to ascii
+writeRaster(to_asciiHB,'HBLv1Hard.asc', format='ascii', overwrite =TRUE)
+
+
+coordinates(predTB.Lv1Hard) <- ~X+Y
+extTB <- extent(predTB.Lv1Hard)
+table(diff(predTB.Lv1Hard@coords[,1]))
+rTB <- raster(ext=extTB,res=0.000043000000031097)
+to_asciiTB <- rasterize(predTB.Lv1Hard, rTB, 'predLv1Hard')
+writeRaster(to_asciiTB,'TBLv1Hard.asc', format='ascii', overwrite =TRUE)
+
+coordinates(predMG.Lv1Hard) <- ~X+Y
+extMG <- extent(predMG.Lv1Hard)
+table(diff(predMG.Lv1Hard@coords[,1]))
+rMG <- raster(ext=extMG,res=0.0000483000000031097)
+to_asciiMG <- rasterize(predMG.Lv1Hard, rMG, 'predLv1Hard')
+writeRaster(to_asciiMG,'MGLv1Hard.asc', format='ascii', overwrite =TRUE)
+
+coordinates(predSS.Lv1Hard) <- ~X+Y
+extSS <- extent(predSS.Lv1Hard)
+table(diff(predSS.Lv1Hard@coords[,1]))
+rSS <- raster(ext=extSS,res=0.00004500000005447)
+to_asciiSS <- rasterize(predSS.Lv1Hard, rSS, 'predLv1Hard')
+writeRaster(to_asciiSS,'SSLv1Hard.asc', format='ascii', overwrite =TRUE)
+
+
+################################################################
+## WRITE OUT.PREDICT files to CSV to use for ROC CALCULATIONS ##
+################################################################
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/ROCtests")
+
+write.csv(out.predict.HBLv1Hard, "1_OutPredict_HB_Lv1Hard_5m.csv")
+write.csv(out.predict.TBLv1Hard, "2_OutPredict_TB_Lv1Hard_5m.csv")
+write.csv(out.predict.MGLv1Hard, "3_OutPredict_MG_Lv1Hard_5m.csv")
+write.csv(out.predict.SSLv1Hard, "4_OutPredict_SS_Lv1Hard_5m.csv")
+
+```
+
+
+
+
+
+
+```{r RANDOM FOREST}
+
+setwd("C:/OneDrive/C3_Map/RF_Outputs")
+set.seed(415)
+
+Lv1Hard.randomForest <- randomForest(as.factor(Lv1_Hard) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= model, 
+                     na.action = na.exclude, 
+                     importance = TRUE, 
+                     proximity = TRUE, 
+                     nodesize = 1)
+
+
+print(Lv1Hard.randomForest)
+print(importance(Lv1Hard.randomForest,type = 2))
+plot(Lv1Hard.randomForest)
+importance(Lv1Hard.randomForest)
+
+varImpPlot(Lv1Hard.randomForest,
+           sort = T,
+           main="Variable Importance",
+           n.var=5)
+
+varImpPlot(Lv1Hard.randomForest,
+           sort = T,
+           main="Variable Importance")
+
+Lv1HardPredImport <- as.data.frame(sort(importance(Lv1Hard.randomForest)[,4], decreasing = TRUE))
+names(Lv1HardPredImport) <- c("MeanDecreaseGini")
+write.table(Lv1HardPredImport, file = "Lv1Hard_predictor_importance.txt",
+            append = FALSE, sep = "\t", eol = "\n", na = "NA", dec = ".", row.names = TRUE,
+            col.names = TRUE, qmethod = c("escape", "double"))
+
+
+# need to edit, look at http://trevorstephens.com/kaggle-titanic-tutorial/r-part-5-random-forests/
+PredictionLv1Hard <- predict(Lv1Hard.randomForest, test)
+submitLv1Hard <- data.frame(PassengerId = test$PassengerId, Survived = PredictionLv1Hard)
+write.csv(submitLv1Hard, file = "Lv1Hardrandomforest.csv", row.names = FALSE)
+ 
+########################
+### Helpful websites ###
+########################
+ 
+#  http://www.statmethods.net/advstats/cart.html
+#  started with code from http://hisdu.sph.uq.edu.au/lsu/radrian/treecode.htm
+# http://dni-institute.in/blogs/random-forest-using-r-step-by-step-tutorial/
+ 
+
+```
+
+```{r rpart classification}
+
+####################################
+#### rpart CLASSIFICATION TREES ####
+####################################
+
+Lv1Hard.rpart <- rpart(Lv1_Hard ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,                        
+                        data=model, na.action = na.exclude, method = "class")
+
+plot(Lv1Hard.rpart); text(Lv1Hard.rpart,cex=0.5)
+
+Lv1Hard.rpart <- rpart(Lv1.Hard ~ std5 + mean3 + mean10 + BPI_B_250 + mean25 + BPI_B_100 + rugosity,                        
+              data=model, na.action = na.exclude, method = "class")
+
+summary(Lv1Hard.rpart)
+printcp(Lv1Hard.rpart) # 0.43204 * 0.3222 = 13.9% misclassification rate
+
+
+###############################################
+#### Test at each site level individually ####
+###############################################
+
+#####################
+#### Helby Banks ####
+#####################
+
+HBLv1Hard.rpart <- rpart(Lv1_Hard ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,                        
+                        data=HBmodel, na.action = na.exclude, method = "class")
+
+plot(HBLv1Hard.rpart); text(HBLv1Hard.rpart,cex=0.5)
+
+HBLv1Hard.rpart <- rpart(Lv1.Hard ~ std5 + mean25 + std3 + BPI_B_100 + mean3 + mean10 + BPI_F_25 + hyp10 + range25,     
+                         data=HBmodel, na.action = na.exclude, method = "class")
+
+summary(HBLv1Hard.rpart)
+printcp(HBLv1Hard.rpart) # 0.4893 * 0.20933 = 10.2% misclassification rate
+
+
+####################
+#### Tantabiddi ####
+####################
+
+TBLv1Hard.rpart <- rpart(Lv1_Hard ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,                        
+                        data=TBmodel, na.action = na.exclude, method = "class")
+
+plot(TBLv1Hard.rpart); text(TBLv1Hard.rpart,cex=0.5)
+
+TBLv1Hard.rpart <- rpart(Lv1.Hard ~ range25 + BPI_B_100 + mean3 + std5 + std25 + range10 + std10 + slope + curv_plan +std3,    
+                         data=TBmodel, na.action = na.exclude, method = "class")
+
+summary(TBLv1Hard.rpart)
+printcp(TBLv1Hard.rpart) # 0.19679 * 0.41272 = 8.1% misclassification rate
+
+
+##################
+#### Mangrove ####
+##################
+
+MGLv1Hard.rpart <- rpart(Lv1_Hard ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,                        
+                        data=MGmodel, na.action = na.exclude, method = "class")
+
+plot(MGLv1Hard.rpart); text(MGLv1Hard.rpart,cex=0.5)
+
+MGLv1Hard.rpart <- rpart(Lv1.Hard ~ mean3 + rugosity + BPI_B_100 + hyp25 + BPI_B_100 + range25 + std25 + std10 + range3 +
+                           range25 + mean10 + slope,    
+                         data=MGmodel, na.action = na.exclude, method = "class")
+
+summary(MGLv1Hard.rpart)
+printcp(MGLv1Hard.rpart) # 0.38762 * 0.1651 = 6.4% misclassification rate
+
+
+#######################
+#### Southern Site ####
+######################
+
+SSLv1Hard.rpart <- rpart(Lv1_Hard ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,                        
+                        data=SSmodel, na.action = na.exclude, method = "class")
+
+plot(SSLv1Hard.rpart); text(SSLv1Hard.rpart,cex=0.5)
+
+SSLv1Hard.rpart <- rpart(Lv1.Hard ~ std5 + BPI_B_100 + BPI_B_50 + std25 + range25 + hyp25 + mean3 + mean25,    
+                         data=SSmodel, na.action = na.exclude, method = "class")
+
+summary(SSLv1Hard.rpart)
+printcp(SSLv1Hard.rpart) # 0.15 * 0.28019 = 4.2% misclassification rate
+
+
+```

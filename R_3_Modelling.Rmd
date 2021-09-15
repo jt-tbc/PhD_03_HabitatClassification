@@ -1,0 +1,507 @@
+---
+title: "RandomForest"
+author: "Joe Turner"
+date: "24 April 2017"
+output: pdf_document
+---
+
+
+```{r read in data and load packages}
+
+library(rpart)
+library(tree)
+library(randomForest)
+library(e1071)
+library(plyr)
+library(vegan)
+library(doBy)
+library(rgdal)
+library(clustsig)
+library(gdata)
+library(ggplot2)
+library(scales)
+library(ggrepel)
+library(RColorBrewer)
+library(reshape2)
+library(reshape)
+library(grid)
+library(dplR)
+library(gridExtra)
+library(Hmisc)
+library(corrplot)
+library(PerformanceAnalytics)
+library(raster)
+library(gmodels)
+st.err <- function(x) {sd(x)/sqrt(length(x))}
+
+# setwd("E:\Chapter 4\01_Geomorphological_Data\9_Spreadsheets_Train_Predict\01_5m")
+# setwd("E:\Chapter 4\01_Geomorphological_Data\9_Spreadsheets_Train_Predict\02_10m")
+# setwd("E:\Chapter 4\01_Geomorphological_Data\9_Spreadsheets_Train_Predict\03_50m")
+# setwd("E:\Chapter 4\01_Geomorphological_Data\9_Spreadsheets_Train_Predict\04_100m")
+# setwd("E:\Chapter 4\01_Geomorphological_Data\9_Spreadsheets_Train_Predict\05_250m")
+
+GT <- read.csv("03_GT_Data.csv", header = TRUE)
+points1 <- read.csv("02_Acoustic_Points_MERGE_9999_Removed.csv", header = TRUE)
+
+# colnames(points)[14] <- "Lat"
+# colnames(points)[13] <- "Long"
+# colnames(points)[8] <- "Depth"
+# colnames(points)[4] <- "BScatter"
+
+size.points1 <- round(0.5 * nrow(points1))
+points2  <- points1[sample ( 1:nrow(points1), size.points1, replace = FALSE),]
+points3 <- points1[- c( sample ( 1:nrow(points1), size.points1, replace = FALSE) ),]
+
+```
+
+
+```{r select training and evaluation data}
+
+set.seed(387)  
+
+# For all data
+size.modeldata <- round(0.75 * nrow(GT))
+model  <- GT[sample ( 1:nrow(GT), size.modeldata, replace = FALSE),]
+test <- GT[- c( sample ( 1:nrow(GT), size.modeldata, replace = FALSE) ),]
+
+# For Helby Banks
+HBsize.modeldata <- round(0.75 * nrow(Helby))
+HBmodel  <- Helby[sample ( 1:nrow(Helby), HBsize.modeldata, replace = FALSE),]
+HBtest <- Helby[- c( sample ( 1:nrow(Helby), HBsize.modeldata, replace = FALSE) ),]
+
+# For Tantabiddi
+TBsize.modeldata <- round(0.75 * nrow(Tanta))
+TBmodel  <- Tanta[sample ( 1:nrow(Tanta), TBsize.modeldata, replace = FALSE),]
+TBtest <- Tanta[- c( sample ( 1:nrow(Tanta), TBsize.modeldata, replace = FALSE) ),]
+
+# For Mangrove
+MGsize.modeldata <- round(0.75 * nrow(Mgrove))
+MGmodel  <- Mgrove[sample ( 1:nrow(Mgrove), MGsize.modeldata, replace = FALSE),]
+MGtest <- Mgrove[- c( sample ( 1:nrow(Mgrove), MGsize.modeldata, replace = FALSE) ),]
+
+# For Mandu
+MUsize.modeldata <- round(0.75 * nrow(Mandu))
+MUmodel  <- Mandu[sample ( 1:nrow(Mandu), MUsize.modeldata, replace = FALSE),]
+MUtest <- Mandu[- c( sample ( 1:nrow(Mandu), MUsize.modeldata, replace = FALSE) ),]
+
+# For Osprey Site
+SSsize.modeldata <- round(0.75 * nrow(Osprey))
+SSmodel  <- Osprey[sample ( 1:nrow(Osprey), SSsize.modeldata, replace = FALSE),]
+SStest <- Osprey[- c( sample ( 1:nrow(Osprey), SSsize.modeldata, replace = FALSE) ),]
+
+
+```
+
+```{r DATA PARTITIONING}
+
+##### 5 Partitions #####
+
+set.seed(37)
+# Load data
+data <- GT
+
+require(caret)
+flds <- createFolds(data$FILENAME, k = 5, list = TRUE, returnTrain = FALSE)
+names(flds)[1] <- "train"
+
+data1 <- data[flds$train,]
+data2 <- data[ flds[[2]], ]
+data3 <- data[ flds[[3]], ]
+data4 <- data[ flds[[4]], ]
+data5 <- data[ flds[[5]], ]
+
+train1 <- data[ !(data$FILENAME %in% data1$FILENAME), ]
+train2 <- data[ !(data$FILENAME %in% data2$FILENAME), ]
+train3 <- data[ !(data$FILENAME %in% data3$FILENAME), ]
+train4 <- data[ !(data$FILENAME %in% data4$FILENAME), ]
+train5 <- data[ !(data$FILENAME %in% data5$FILENAME), ]
+
+
+##### DATA SUBSET NORTH (HB, TB, and MG) V SOUTH (MU and OS) #####
+
+set.seed(37)
+
+# Split by Latitude, -22.01 below Mangrove, create north and south data sets:
+myData <- GT
+South <- myData[myData$Lat < -22.01,]
+North <- myData[ !(myData$FILENAME %in% South$FILENAME), ]
+
+# split north data 70% train, 30% test to create models
+size.modeldata <- round(0.70 * nrow(North))
+model  <- North[sample ( 1:nrow(North), size.modeldata, replace = FALSE),]
+test <- North[- c( sample ( 1:nrow(North), size.modeldata, replace = FALSE) ),]
+
+
+##### BY YEAR #####
+
+set.seed(37)
+
+# Split by Latitude, -22.01 below Mangrove, create north and south data sets:
+myData <- GT
+data_2017 <- myData[myData$Year == 2017,]
+data_pre_2017 <- myData[ !(myData$FILENAME %in% data_2017$FILENAME), ]
+
+# split north data 70% train, 30% test to create models
+size.modeldata <- round(0.70 * nrow(data_pre_2017))
+model  <- data_pre_2017[sample ( 1:nrow(data_pre_2017), size.modeldata, replace = FALSE),]
+test <- data_pre_2017[- c( sample ( 1:nrow(data_pre_2017), size.modeldata, replace = FALSE) ),]
+
+
+
+```
+
+```{r BORUTA ALGORITHM}
+
+##########################
+#### BORUTA ALGORITHM ####
+##########################
+
+library(Boruta)
+# https://www.analyticsvidhya.com/blog/2016/03/select-important-variables-boruta-package/
+
+boruta.trainHB <- Boruta(as.factor(L3_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	bpi_f_10 +	bpi_f_15 +
+                       bpi_f_25 +	bpi_b_50 +	bpi_b_100 +	bpi_b_250 +	Depth + BScatter, 
+                       data = HBmodel, 
+                       pValue = 0.01, 
+                       doTrace = 2)
+print(boruta.trainHB)
+
+plot(boruta.trainHB, xlab = "", xaxt = "n")
+lz<-lapply(1:ncol(boruta.trainHB$ImpHistory),function(i)
+boruta.trainHB$ImpHistory[is.finite(boruta.trainHB$ImpHistory[,i]),i])
+names(lz) <- colnames(boruta.trainHB$ImpHistory)
+Labels <- sort(sapply(lz,median))
+axis(side = 1,las=2,labels = names(Labels),
+at = 1:ncol(boruta.trainHB$ImpHistory), cex.axis = 0.7)
+
+final.borutaHB <- TentativeRoughFix(boruta.trainHB)
+print(final.borutaHB)
+
+
+boruta.trainTB <- Boruta(as.factor(L3_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	bpi_f_10 +	bpi_f_15 +
+                       bpi_f_25 +	bpi_b_50 +	bpi_b_100 +	bpi_b_250 +	Depth + BScatter, 
+                       data = TBmodel, 
+                       pValue = 0.01, 
+                       doTrace = 2)
+print(boruta.trainTB)
+
+boruta.trainMG <- Boruta(as.factor(L3_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	bpi_f_10 +	bpi_f_15 +
+                       bpi_f_25 +	bpi_b_50 +	bpi_b_100 +	bpi_b_250 +	Depth + BScatter, 
+                       data = MGmodel, 
+                       pValue = 0.01, 
+                       doTrace = 2)
+print(boruta.trainMG)
+
+boruta.trainSS <- Boruta(as.factor(L3_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	bpi_f_10 +	bpi_f_15 +
+                       bpi_f_25 +	bpi_b_50 +	bpi_b_100 +	bpi_b_250 +	Depth + BScatter, 
+                       data = SSmodel, 
+                       pValue = 0.01, 
+                       doTrace = 2)
+print(boruta.trainSS)
+
+
+```
+
+```{r RANDOM FOREST}
+
+##########################
+#### LEVEL 1 HABITATS ####
+##########################
+
+setwd("D:/C4_Model/Map Update/RF_Outputs")
+set.seed(415)
+
+# predictors<-c("curv","curv_plan","curv_prof","slope","mean3","mean5","mean10","mean25",
+  #            "std3","	std5","	std10","std25","range3","range5","range10","range25",
+   #           "hyp3","	hyp5","hyp10","hyp25","rugosity","	east","north","bpi_f_10",
+    #          "bpi_f_15","bpi_f_25","bpi_b_50","	bpi_b_100","bpi_b_250","Depth","BScatter")
+
+
+rf1 <- randomForest(as.factor(L1_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	
+                                      mean10 + mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	
+                                      range10 +	range25 + hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	
+                                      north +	bpi_f_10 +	bpi_f_15 + bpi_f_25 +	bpi_b_50 +	bpi_b_100 +	
+                                      bpi_b_250 +	Depth + BScatter,
+                     data= model[1:15844,], 
+                     na.action = na.exclude, 
+                     importance = TRUE, 
+                     proximity = TRUE, 
+                     ntree = 1000,
+                     do.trace = 100,
+                     nodesize = 1)
+
+rf2 <- randomForest(as.factor(L1_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	
+                                      mean10 + mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	
+                                      range10 +	range25 + hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	
+                                      north +	bpi_f_10 +	bpi_f_15 + bpi_f_25 +	bpi_b_50 +	bpi_b_100 +	
+                                      bpi_b_250 +	Depth + BScatter,
+                     data= model[15845:31688,], 
+                     na.action = na.exclude, 
+                     importance = TRUE, 
+                     proximity = TRUE, 
+                     ntree = 1000,
+                     do.trace = 100,
+                     nodesize = 1)
+
+rf3 <- randomForest(as.factor(L1_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	
+                                      mean10 + mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	
+                                      range10 +	range25 + hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	
+                                      north +	bpi_f_10 +	bpi_f_15 + bpi_f_25 +	bpi_b_50 +	bpi_b_100 +	
+                                      bpi_b_250 +	Depth + BScatter,
+                     data = model[31689:47532,], 
+                     na.action = na.exclude, 
+                     importance = TRUE, 
+                     proximity = TRUE, 
+                     ntree = 1000,
+                     do.trace = 100,
+                     nodesize = 1)
+
+combineRF <- combine(rf1,rf2)
+L1_Hab.randomForest <- combine(combineRF,rf3)
+
+print(L1_Hab.randomForest)
+print(importance(L1_Hab.randomForest,type = 2))
+plot(L1_Hab.randomForest)
+importance(L1_Hab.randomForest)
+
+sink("D:/C4_Model/Map Update/RF_Outputs/ALL_L1_Hab.txt")
+L1_Hab.randomForest 
+sink()
+
+
+png(file = 'All_L1_Hab_VarImpPlot.png', width = 8, height = 8, units = 'in', res = 300)
+varImpPlot(L1_Hab.randomForest,
+           sort = T,
+           main="Variable Importance")
+dev.off()
+
+L1_HabPredImport <- as.data.frame(sort(importance(L1_Hab.randomForest)[,4], decreasing = TRUE))
+names(L1_HabPredImport) <- c("MeanDecreaseGini")
+write.table(L1_HabPredImport, file = "All_L1_Hab_predictor_importance.txt",
+            append = FALSE, sep = "\t", eol = "\n", na = "NA", dec = ".", row.names = TRUE,
+            col.names = TRUE, qmethod = c("escape", "double"))
+
+true.type = as.factor(test[,25])
+predicted = predict(L1_Hab.randomForest, test,type="class")
+table(true.type,predicted)
+setwd("D:/C4_Model/Map Update/RF_Outputs/BER")
+write.csv(table(true.type,predicted), "1_RF_Lv1_MisclassMatrix.csv")
+
+# need to edit, look at http://trevorstephens.com/kaggle-titanic-tutorial/r-part-5-random-forests/
+# PredictionL1_Hab <- predict(L1_Hab.randomForest, test)
+# submitL1_Hab <- data.frame(HabType = test$L1_Hab, PredictedL1_Hab = PredictionL1_Hab, X = test$Lat, Y = test$Long)
+# setwd("D:/C4_Model/Map Update/RF_Outputs/ROCtests")
+# write.csv(submitL1_Hab, file = "L1_Habrandomforest.csv", row.names = FALSE)
+
+
+#############
+## PREDICT ##
+############
+
+L1_Hab.rF.predict <- predict(L1_Hab.randomForest, points1)
+L1_Hab.predict <- as.data.frame(L1_Hab.rF.predict)
+pred.L1_Hab <- as.data.frame(cbind(points1$Long, points1$Lat, L1_Hab.predict))
+pred.L1_Hab$L1_Hab.rF.predict <- as.numeric(as.character(pred.L1_Hab$L1_Hab.rF.predict))
+names(pred.L1_Hab) <- c("X","Y", "predL1_Hab")
+
+
+# L1_Hab.rF.predict2 <- predict(L1_Hab.randomForest, points2)
+# L1_Hab.predict2 <- as.data.frame(L1_Hab.rF.predict2)
+# pred.L1_Hab2 <- as.data.frame(cbind(points2$Long, points2$Lat,  L1_Hab.predict2))
+# pred.L1_Hab2$L1_Hab.rF.predict2 <- as.numeric(as.character(pred.L1_Hab2$L1_Hab.rF.predict2))
+# names(pred.L1_Hab2) <- c("X","Y", "predL1_Hab")
+
+# L1_Hab.rF.predict3 <- predict(L1_Hab.randomForest, points3)
+# L1_Hab.predict3 <- as.data.frame(L1_Hab.rF.predict3)
+# pred.L1_Hab3 <- as.data.frame(cbind(points3$Long, points3$Lat,  L1_Hab.predict3))
+# pred.L1_Hab3$L1_Hab.rF.predict3 <- as.numeric(as.character(pred.L1_Hab3$L1_Hab.rF.predict3))
+# names(pred.L1_Hab3) <- c("X","Y", "predL1_Hab")
+
+############
+## OUTPUT ##
+############
+
+setwd("D:/C4_Model/Map Update/RF_Outputs/Lv1Outputs")
+
+coordinates(pred.L1_Hab) <- ~X+Y
+ext <- extent(pred.L1_Hab)
+t <- table(diff(pred.L1_Hab@coords[,1]))
+r <- raster(ext=ext,res=0.00010000000000332)
+to_ascii <- rasterize(pred.L1_Hab, r, 'predL1_Hab')
+writeRaster(to_ascii,'L1_HabRF.asc', format='ascii', overwrite =TRUE)
+
+# coordinates(pred.L1_Hab2) <- ~X+Y
+# ext2 <- extent(pred.L1_Hab2)
+# r2 <- raster(ext=ext2,res=0.0000483000000031097)
+# to_ascii2 <- rasterize(pred.L1_Hab2, r2, 'predL1_Hab')
+# writeRaster(to_ascii2,'L1_HabRF2.asc', format='ascii', overwrite =TRUE)
+
+# coordinates(pred.L1_Hab3) <- ~X+Y
+# ext3 <- extent(pred.L1_Hab3)
+# r3 <- raster(ext=ext3,res=0.0000483000000031097)
+# to_ascii3 <- rasterize(pred.L1_Hab3, r3, 'predL1_Hab')
+# writeRaster(to_ascii3,'L1_HabRF3.asc', format='ascii', overwrite =TRUE)
+
+# need to edit, look at http://trevorstephens.com/kaggle-titanic-tutorial/r-part-5-random-forests/
+Prediction_L1_Hab <- predict(L1_Hab.randomForest, test)
+submit_L1_Hab <- data.frame(HabType = test$L1_Hab, PredictedL1_Hab = Prediction_L1_Hab, X = test$Lat, Y = test$Long)
+setwd("D:/C4_Model/Map Update/RF_Outputs/ROCtests")
+write.csv(submit_L1_Hab, file = "All_L1_Habrandomforest.csv", row.names = FALSE)
+
+
+########################
+### Helpful websites ###
+########################
+ 
+# http://www.statmethods.net/advstats/cart.html
+# http://dni-institute.in/blogs/random-forest-using-r-step-by-step-tutorial/
+ 
+
+```
+
+```{r CROSS VALIDATION RANDOM FOREST}
+
+# https://vimeo.com/75432414
+
+setwd("C:/OneDrive/C4_Model")
+set.seed(37)
+data <- read.csv("01_Spatial_Autocorrelation_Data.csv", head = T)
+# shuffle data so random
+data <- data[sample(nrow(data)),]
+k = 5
+
+library(verification)
+library(randomForest)
+
+for(i in 1:k){
+  s1 = ((i - 1) * n + 1) # start of subset
+  s2 = (i * n) # end of subset
+  subset = s1:s2 # range of subset
+  
+  cv.train = data[-subset,] # data to train model
+  cv.test = data[subset,] # data to test model
+  
+  # run random forest on train dataset
+  fit = randomForest(as.factor(Coral_PA) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	
+                                      mean10 + mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	
+                                      range10 +	range25 + hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	
+                                      north +	bpi_f_10 +	bpi_f_15 + bpi_f_25 +	bpi_b_50 +	bpi_b_100 +	
+                                      bpi_b_250 +	Depth + BScatter,
+                     data = cv.train, 
+                     na.action = na.exclude, 
+                     importance = TRUE, 
+                     proximity = TRUE, 
+                     ntree = 1000,
+                     do.trace = 100,
+                     do.classif = TRUE,
+                     nodesize = 5,
+                     mtry = 'default',
+                     maxnodes = NULL)
+  
+  # make prediction on the test set
+  prediction = predict(fit, newdata = cv.test[,-1], type = "prob")[,2]
+  
+  # calculate model accuracy
+  err.vect[i] = roc.area(cv.test[,1], prediction)$A
+  print(paste("AUC for fold", i, ":", err.vect[i]))
+}
+
+print(paste("Average AUV:", mean(err.vect)))
+
+```
+
+```{r BIOMOD 2}
+
+
+
+```
+
+```{r TUNE ALGORITHMS}
+
+# https://machinelearningmastery.com/caret-r-package-for-applied-predictive-modeling/
+# https://machinelearningmastery.com/tune-machine-learning-algorithms-in-r/
+
+
+```
+
+```{r AUC CURVES}
+
+
+library(ROCR)
+setwd("D:/C4_Model/Map Update/RF_Outputs/ROCtests")
+
+filenames <- list.files()  
+for (i in filenames) {  
+   name <- gsub("-",".",i)
+   name <- gsub(".csv","",name)  
+   i <- paste(".\\",i,sep="")
+   assign(name,read.csv(i, header=TRUE))
+} 
+
+
+predictL1ALL <- prediction(as.numeric(as.character(L1_Habrandomforest$PredictedL1_Hab)), L1_Habrandomforest$HabType)
+perfL1ALL <- performance(predictL1ALL, measure = "tpr", x.measure = "fpr")
+plot(perfL1ALL, mean = "ROC curve for L1 ALL",
+     col = "blue", lwd = 3)
+abline(a=0, b=1, lwd = 2, lty = 2)
+perf.aucL1ALL <- performance(predictL1ALL, measure = "auc")
+str(perf.aucL1ALL)
+unlist(perf.aucL1ALL@y.values)
+
+predictL1HB <- prediction(as.numeric(as.character(HB_L1_Habrandomforest$PredictedL1_Hab)), HB_L1_Habrandomforest$HabType)
+perfL1HB <- performance(predictL1HB, measure = "tpr", x.measure = "fpr")
+plot(perfL1HB, mean = "ROC curve for L1 HB",
+     col = "blue", lwd = 3)
+abline(a=0, b=1, lwd = 2, lty = 2)
+perf.aucL1HB <- performance(predictL1HB, measure = "auc")
+str(perf.aucL1HB)
+unlist(perf.aucL1HB@y.values)
+
+predictL1TB <- prediction(as.numeric(as.character(TB_L1_Habrandomforest$PredictedL1_Hab)), TB_L1_Habrandomforest$HabType)
+perfL1TB <- performance(predictL1TB, measure = "tpr", x.measure = "fpr")
+plot(perfL1TB, mean = "ROC curve for L1 TB",
+     col = "blue", lwd = 3)
+abline(a=0, b=1, lwd = 2, lty = 2)
+perf.aucL1TB <- performance(predictL1TB, measure = "auc")
+str(perf.aucL1TB)
+unlist(perf.aucL1TB@y.values)
+
+predictL1MG <- prediction(as.numeric(as.character(MG_L1_Habrandomforest$PredictedL1_Hab)), MG_L1_Habrandomforest$HabType)
+perfL1MG <- performance(predictL1MG, measure = "tpr", x.measure = "fpr")
+plot(perfL1MG, mean = "ROC curve for L1 MG",
+     col = "blue", lwd = 3)
+abline(a=0, b=1, lwd = 2, lty = 2)
+perf.aucL1MG <- performance(predictL1MG, measure = "auc")
+str(perf.aucL1MG)
+unlist(perf.aucL1MG@y.values)
+
+predictL1MU <- prediction(as.numeric(as.character(MU_L1_Habrandomforest$PredictedL1_Hab)), MU_L1_Habrandomforest$HabType)
+perfL1MU <- performance(predictL1MU, measure = "tpr", x.measure = "fpr")
+plot(perfL1MU, mean = "ROC curve for L1 MU",
+     col = "blue", lwd = 3)
+abline(a=0, b=1, lwd = 2, lty = 2)
+perf.aucL1MU <- performance(predictL1MU, measure = "auc")
+str(perf.aucL1MU)
+unlist(perf.aucL1MU@y.values)
+
+predictL1SS <- prediction(as.numeric(as.character(SS_L1_Habrandomforest$PredictedL1_Hab)), SS_L1_Habrandomforest$HabType)
+perfL1SS <- performance(predictL1SS, measure = "tpr", x.measure = "fpr")
+plot(perfL1SS, mean = "ROC curve for L1 SS",
+     col = "blue", lwd = 3)
+abline(a=0, b=1, lwd = 2, lty = 2)
+perf.aucL1SS <- performance(predictL1SS, measure = "auc")
+str(perf.aucL1SS)
+unlist(perf.aucL1SS@y.values)
+
+
+```
+
+

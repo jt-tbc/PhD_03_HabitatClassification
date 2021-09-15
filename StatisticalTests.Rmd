@@ -1,0 +1,365 @@
+---
+title: "AccuracyComparison"
+author: "Joe Turner"
+date: "5 June 2017"
+output: pdf_document
+---
+
+```{r setup}
+
+library(rpart)
+library(tree)
+library(randomForest)
+library(e1071)
+library(plyr)
+library(vegan)
+library(doBy)
+library(rgdal)
+library(clustsig)
+library(gdata)
+library(ggplot2)
+library(scales)
+library(ggrepel)
+library(RColorBrewer)
+library(reshape2)
+library(reshape)
+library(grid)
+library(dplR)
+library(gridExtra)
+library(Hmisc)
+library(corrplot)
+library(PerformanceAnalytics)
+library(raster)
+library(ggthemes)
+st.err <- function(x) {sd(x)/sqrt(length(x))}
+
+setwd("C:/OneDrive/C3_Map")
+OA <- read.csv("22_OverallAccuracy.csv", header = TRUE)
+
+set.seed(1234)
+## TWO-WAY ANOVA ##
+anova(lm(OA$Kappa ~ OA$Model.Type * OA$CATAMI))
+anova(lm(OA$Overall.Accuracy ~ OA$Model.Type * OA$CATAMI))
+anova(lm(OA$BER ~ OA$Model.Type * OA$CATAMI))
+
+
+library(coin)
+max.iter <- 10000
+independence_test(Kappa ~ Model.Type, data=OA, distribution = approximate(B=max.iter))
+independence_test(BER ~ Model.Type, data=OA, distribution = approximate(B=max.iter))
+
+
+oneway_test(Kappa ~ Model.Type, data=OA,
+  distribution=approximate(B=9999))
+
+oneway_test(BER ~ Model.Type, data=OA,
+  distribution=approximate(B=9999))
+
+
+
+
+
+observed_F_value <- anova(lm(OA$Kappa ~ OA$Model.Type))$"F value"[1]
+n <- 10000
+permutation_F_values <- numeric(length=n)
+for(i in 1:n){
+   # note: the sample function without extra parameters defaults to a permutation
+   temp_fit <- anova(lm(OA$Kappa ~ OA$Model.Type))
+   permutation_F_values[i] <- temp_fit$"F value"[1]
+}
+hist(permutation_F_values, xlim=range(c(observed_F_value, permutation_F_values)))
+abline(v=observed_F_value, lwd=3, col="red")
+cat("P value: ", sum(permutation_F_values >= observed_F_value), "/", n, "\n", sep="")
+
+
+
+
+
+## http://danielnee.com/2015/01/random-permutation-tests/
+groups <- OA$Model.Type
+data <- OA$Kappa
+diff(by(data, groups, mean))
+s <- sample(groups, length(groups), FALSE)
+diff(by(data, s, mean))
+max.iter <- 10000
+examples <- unlist(lapply(1:max.iter, function(x) {
+  diff(by(data, sample(groups, length(groups), FALSE), mean))  
+}))
+test.diff <- diff(by(data, groups, mean))
+par(mfrow=c(1,1))
+hist(examples, col = "red", breaks = 100, main="Random Permutations", xlab="")
+abline(v = test.diff[2], col = "black", lwd = 4)
+
+# two-tailed test
+(sum(abs(examples) > abs(test.diff[2])) + 1) / (max.iter + 1)  
+(sum(abs(examples) > abs(test.diff[1])) + 1) / (max.iter + 1) 
+
+
+groups <- OA$Model.Type
+data <- OA$BER
+diff(by(data, groups, mean))
+s <- sample(groups, length(groups), FALSE)
+diff(by(data, s, mean))
+max.iter <- 10000
+examples <- unlist(lapply(1:max.iter, function(x) {
+  diff(by(data, sample(groups, length(groups), FALSE), mean))  
+}))
+test.diff <- diff(by(data, groups, mean))
+par(mfrow=c(1,1))
+hist(examples, col = "red", breaks = 100, main="Random Permutations", xlab="")
+abline(v = test.diff[1], col = "black", lwd = 4)
+
+# two-tailed test
+(sum(abs(examples) > abs(test.diff[2])) + 1) / (max.iter + 1)  
+(sum(abs(examples) > abs(test.diff[1])) + 1) / (max.iter + 1) 
+
+
+
+## https://www.uvm.edu/~dhowell/StatPages/R/RandomizationTestsWithR/RandomOneway/RandomOneway.html
+# Randomization test for one way ANOVA
+# Data file has column1 = group and column2 = dv
+# This data file has unequal n's
+
+data <- read.csv("22_OverallAccuracy.csv", header = TRUE)
+names(data)
+data$Group <- as.factor(data$Model.Type)
+nreps <- 10000
+N <- length(data$Kappa)
+n.i <- as.vector(table(data$Group))   # Create vector of sample sizes
+k <- length(n.i)
+
+model <- anova(lm(data$Kappa ~ data$Group))
+obt.F <- model$"F value"[1]     # Our obtained F  statistic
+cat("The obtained value of F from the standard F test is ",obt.F, "\n")
+cat("This has an associated probability of ", obt.p,  "\n")
+samp.F <- numeric(nreps)
+counter <- 0
+set.seed(1086)
+for (i in 1:nreps) {
+  newKappa <- sample(data$Kappa)
+  newModel <- anova(lm(newKappa~data$Group))
+  samp.F[i] <- newModel$"F value"[1]
+  if (samp.F[i] > obt.F) counter = counter + 1
+  }
+pvalue <- counter/nreps
+cat("\nThe calculated value of p from randomized samples is ",pvalue, "\n \n")
+par(mfrow = c(1,1))
+hist(samp.F, breaks = 50, main = "Histogram of F on Randomized Samples",
+   xlab = "F value", probability = TRUE, col = "green", border = 1,
+   xlim = c(0,7), ylim = c(0,1))
+legend("topright", paste("obtained.F = ", round(obt.F, digits = 4)), col=1,  cex = 0.8)
+legend("right",paste("p-value = ",round(pvalue, digits = 4)))
+arrows( 5.5, 0.8,obt.F,0, length = .125)
+
+f <- seq(0, 7,.01)
+dens <- df(f,3,41)
+par(new = T)
+plot(f,dens, col = "red", type = "l", xlim = c(0,7), ylim = c(0,1), xlab = "", ylab = "")
+#polygon(f,dens, col = "red")
+
+
+
+N <- length(data$BER)
+n.i <- as.vector(table(data$Group))   # Create vector of sample sizes
+k <- length(n.i)
+
+model <- anova(lm(data$BER ~ data$Group))
+obt.F <- model$"F value"[1]     # Our obtained F  statistic
+cat("The obtained value of F from the standard F test is ",obt.F, "\n")
+cat("This has an associated probability of ", obt.p,  "\n")
+samp.F <- numeric(nreps)
+counter <- 0
+set.seed(1086)
+for (i in 1:nreps) {
+  newBER <- sample(data$BER)
+  newModel <- anova(lm(newBER~data$Group))
+  samp.F[i] <- newModel$"F value"[1]
+  if (samp.F[i] > obt.F) counter = counter + 1
+  }
+pvalue <- counter/nreps
+cat("\nThe calculated value of p from randomized samples is ",pvalue, "\n \n")
+par(mfrow = c(1,1))
+hist(samp.F, breaks = 50, main = "Histogram of F on Randomized Samples",
+   xlab = "F value", probability = TRUE, col = "green", border = 1,
+   xlim = c(0,7), ylim = c(0,1))
+legend("topright", paste("obtained.F = ", round(obt.F, digits = 4)), col=1,  cex = 0.8)
+legend("right",paste("p-value = ",round(pvalue, digits = 4)))
+arrows( 5.5, 0.8,obt.F,0, length = .125)
+
+f <- seq(0, 7,.01)
+dens <- df(f,3,41)
+par(new = T)
+plot(f,dens, col = "red", type = "l", xlim = c(0,7), ylim = c(0,1), xlab = "", ylab = "")
+#polygon(f,dens, col = "red")
+
+
+
+# Demonstration of lmPerm library
+library(lmPerm)
+result <- summary(aovp(data$Kappa ~ as.factor(data$CATAMI), perm = "Exact", seqs = FALSE))
+cat(" Using the lmPerm library we obtain the following results. \n")
+print(result)
+result2 <- summary(aovp(data$BER ~ as.factor(data$CATAMI), perm = "Exact", seqs = FALSE))
+cat(" Using the lmPerm library we obtain the following results. \n")
+print(result2)
+
+
+
+
+library(irr)
+df <- read.csv("NB_HBL2.csv", row.names = 1, header = T)
+kappa2(df)
+
+```
+
+
+
+```{r}
+
+## RF ONLY DATA ##
+setwd("C:/OneDrive/C3_Map")
+OA <- read.csv("22_OverallAccuracy.csv", header = TRUE)
+RF <- subset(OA, Model.Type == "RandomForest")
+RF$CATAMI.Level <- as.factor(RF$CATAMI.Level)
+
+set.seed(1234)
+## TWO-WAY ANOVA ##
+anova(lm(RF$Kappa ~ RF$CATAMI.Level * RF$Site))
+anova(lm(RF$Overall.Accuracy ~ RF$CATAMI.Level * RF$Site))
+anova(lm(RF$BER ~ RF$CATAMI.Level * RF$Site))
+
+
+library(coin)
+max.iter <- 10000
+independence_test(Kappa ~ CATAMI.Level, data=RF, distribution = approximate(B=max.iter))
+independence_test(BER ~ CATAMI.Level, data=RF, distribution = approximate(B=max.iter))
+
+
+oneway_test(Kappa ~ CATAMI.Level, data=RF,
+  distribution=approximate(B=9999))
+
+oneway_test(BER ~ CATAMI.Level, data=RF,
+  distribution=approximate(B=9999))
+
+## https://www.uvm.edu/~dhowell/StatPages/R/RandomizationTestsWithR/RandomOneway/RandomOneway.html
+# Randomization test for one way ANOVA
+# Data file has column1 = group and column2 = dv
+# This data file has unequal n's
+
+data <- RF
+names(data)
+data$Group <- as.factor(data$CATAMI.Level)
+nreps <- 10000
+N <- length(data$Kappa)
+n.i <- as.vector(table(data$Group))   # Create vector of sample sizes
+k <- length(n.i)
+
+model <- anova(lm(data$Kappa ~ data$Group))
+obt.F <- model$"F value"[1]     # Our obtained F  statistic
+cat("The obtained value of F from the standard F test is ",obt.F, "\n")
+samp.F <- numeric(nreps)
+counter <- 0
+set.seed(1086)
+for (i in 1:nreps) {
+  newKappa <- sample(data$Kappa)
+  newModel <- anova(lm(newKappa~data$Group))
+  samp.F[i] <- newModel$"F value"[1]
+  if (samp.F[i] > obt.F) counter = counter + 1
+  }
+pvalue <- counter/nreps
+cat("\nThe calculated value of p from randomized samples is ",pvalue, "\n \n")
+par(mfrow = c(1,1))
+hist(samp.F, breaks = 50, main = "Histogram of F on Randomized Samples",
+   xlab = "F value", probability = TRUE, col = "green", border = 1,
+   xlim = c(0,7), ylim = c(0,1))
+legend("topright", paste("obtained.F = ", round(obt.F, digits = 4)), col=1,  cex = 0.8)
+legend("right",paste("p-value = ",round(pvalue, digits = 4)))
+arrows( 5.5, 0.8,obt.F,0, length = .125)
+
+f <- seq(0, 7,.01)
+dens <- df(f,3,41)
+par(new = T)
+plot(f,dens, col = "red", type = "l", xlim = c(0,7), ylim = c(0,1), xlab = "", ylab = "")
+#polygon(f,dens, col = "red")
+
+
+## FOR BER ##
+
+N <- length(data$BER)
+n.i <- as.vector(table(data$Group))   # Create vector of sample sizes
+k <- length(n.i)
+model <- anova(lm(data$BER ~ data$Group))
+obt.F <- model$"F value"[1]     # Our obtained F  statistic
+cat("The obtained value of F from the standard F test is ",obt.F, "\n")
+samp.F <- numeric(nreps)
+counter <- 0
+set.seed(1086)
+for (i in 1:nreps) {
+  newBER <- sample(data$BER)
+  newModel <- anova(lm(newBER~data$Group))
+  samp.F[i] <- newModel$"F value"[1]
+  if (samp.F[i] > obt.F) counter = counter + 1
+  }
+pvalue <- counter/nreps
+cat("\nThe calculated value of p from randomized samples is ",pvalue, "\n \n")
+par(mfrow = c(1,1))
+hist(samp.F, breaks = 50, main = "Histogram of F on Randomized Samples",
+   xlab = "F value", probability = TRUE, col = "green", border = 1,
+   xlim = c(0,7), ylim = c(0,1))
+legend("topright", paste("obtained.F = ", round(obt.F, digits = 4)), col=1,  cex = 0.8)
+legend("right",paste("p-value = ",round(pvalue, digits = 4)))
+arrows( 5.5, 0.8,obt.F,0, length = .125)
+
+f <- seq(0, 7,.01)
+dens <- df(f,3,41)
+par(new = T)
+plot(f,dens, col = "red", type = "l", xlim = c(0,7), ylim = c(0,1), xlab = "", ylab = "")
+#polygon(f,dens, col = "red")
+
+```
+
+
+
+
+```{r}
+
+## FIGURE - plot RF averages ##
+
+setwd("C:/OneDrive/C3_Map")
+OA <- read.csv("22_OverallAccuracy.csv", header = TRUE)
+RF <- subset(OA, Model.Type == "RandomForest")
+summaryRF <- RF %>% group_by(CATAMI.Level) %>% summarise(mean(Kappa),mean(BER), mean(Overall.Accuracy))
+colnames(summaryRF)<- c("CATAMI", "Kappa", "BER", "Overall Accuracy")
+summaryRF$CATAMI <- as.factor(summaryRF$CATAMI)
+summaryRF <- as.data.frame(summaryRF)
+meltRF <- melt(summaryRF,id.vars = 'CATAMI')
+
+summaryRF2 <- RF %>% group_by(CATAMI.Level) %>% summarise(sd(Kappa),sd(BER), sd(Overall.Accuracy))
+colnames(summaryRF2)<- c("CATAMI", "SDKappa", "SDBER", "SDOverall Accuracy")
+summaryRF2$CATAMI <- as.factor(summaryRF2$CATAMI)
+summaryRF2 <- as.data.frame(summaryRF2)
+meltRF2 <- melt(summaryRF2,id.vars = 'CATAMI')
+
+colnames(meltRF)<- c("CATAMI", "variable", "Mean")
+meltRF$SD <- meltRF2$value
+
+RF_fig <- ggplot(meltRF, aes(x= variable, Mean, fill = as.factor(CATAMI))) +
+        geom_bar(position = "dodge", stat = "identity", colour = "black") +
+        scale_fill_brewer(palette="Greys") + 
+        theme_tufte() +
+        theme(axis.title.x = element_blank()) +
+        theme(axis.title.y = element_blank()) +
+        guides(fill=guide_legend(title="CATAMI Level")) +
+        theme(axis.text.x = element_text(colour="black",size=10, face = "bold")) +
+        theme(axis.text.y = element_text(colour="black",size=10)) + 
+        geom_errorbar(aes(ymin= Mean - SD, ymax= Mean + SD), width=.2,position=position_dodge(.9))
+
+setwd("C:/OneDrive/C3_Map/Maps")
+png(file = paste('Fig_RandomForestAccuracy.png', sep = ''), 
+            width = 8, height = 4, units = 'in', res = 300)
+RF_fig
+dev.off()
+
+
+```
+

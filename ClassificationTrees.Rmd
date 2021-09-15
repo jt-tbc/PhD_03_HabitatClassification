@@ -1,0 +1,3321 @@
+---
+title: "Classification Trees"
+author: "Joe Turner"
+date: "30 March 2017"
+output: pdf_document
+---
+
+```{r}
+
+library(rpart)
+library(tree)
+library(randomForest)
+library(e1071)
+library(plyr)
+library(vegan)
+library(doBy)
+library(rgdal)
+library(clustsig)
+library(gdata)
+library(ggplot2)
+library(scales)
+library(ggrepel)
+library(RColorBrewer)
+library(reshape2)
+library(reshape)
+library(grid)
+library(dplR)
+library(gridExtra)
+library(Hmisc)
+library(corrplot)
+library(PerformanceAnalytics)
+library(raster)
+library(gmodels)
+st.err <- function(x) {sd(x)/sqrt(length(x))}
+
+setwd("C:/OneDrive/C3_Map")
+GT <- read.csv("14_GIS_GT_Intercept_5m_9999_Removed_L3EDIT.csv", header = TRUE)
+Helby <- read.csv("15_HelbyBanks_GT_5m_L3EDIT.csv", header = TRUE)
+Tanta <- read.csv("16_Tantabiddi_GT_5m_L3EDIT.csv", header = TRUE)
+Mgrove <- read.csv("17_Mangrove_GT_5m_L3EDIT.csv", header = TRUE)
+South <- read.csv("18_SouthSite_GT_5m_L3EDIT.csv", header = TRUE)
+
+setwd("C:/OneDrive/C3_Map/PointsForPrediction")
+
+HBpoints <- read.csv("Helby_Predict_5m.csv", header = TRUE)
+TBpoints <- read.csv("Tanta_Predict_5m.csv", header = TRUE)
+MGpoints <- read.csv("Mangrove_Predict_5m.csv", header = TRUE)
+SSpoints <- read.csv("South_Predict_5m.csv", header = TRUE)
+points1 <- read.csv("AllSites_Predict_5m_1.csv", header = TRUE)
+points2 <- read.csv("AllSites_Predict_5m_2.csv", header = TRUE)
+points3 <- read.csv("AllSites_Predict_5m_3.csv", header = TRUE)
+
+```
+
+
+```{r correlation matrix}
+
+# http://www.sthda.com/english/wiki/correlation-matrix-a-quick-start-guide-to-analyze-format-and-visualize-a-correlation-matrix-using-r-software
+
+cor <- cor(GT[,32:62])
+round(cor, 2)
+corrplot(cor, method="number")
+corrplot(cor, type="lower")
+
+# can caluculate a correlation matrix with significance levels
+
+cor2 <- rcorr(as.matrix(GT[,32:62]))
+cor2
+# Extract the correlation coefficients
+cor2$r
+# Extract p-values
+cor2$P
+
+# flattenCorrMatrix
+# ++++++++++++++++++++++++++++
+# cormat : matrix of the correlation coefficients
+# pmat : matrix of the correlation p-values
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+    )
+}
+
+res2<-rcorr(as.matrix(GT[,32:62]))
+CorMatrix <- flattenCorrMatrix(res2$r, res2$P)
+write.csv(CorMatrix, "8_Correlation_Matrix.csv")
+
+# Insignificant correlation are left blank
+corrplot(res2$r, type="upper", order="hclust", 
+         p.mat = res2$P, sig.level = 0.01, insig = "blank")
+
+
+# draw scatter plots
+chart.Correlation(GT[,32:62], histogram=TRUE, pch=19)
+
+```
+
+
+```{r select training and evaluation data}
+
+set.seed(387)  
+
+# For all data
+size.modeldata <- round(0.75 * nrow(GT))
+model  <- GT[sample ( 1:nrow(GT), size.modeldata, replace = FALSE),]
+test <- GT[- c( sample ( 1:nrow(GT), size.modeldata, replace = FALSE) ),]
+
+dat <- read.csv("04_unique_questions.csv", head = T)
+dat2 <- dat %>%
+  group_by(Theme) %>%
+  sample_frac(.25)
+dat3 <- setdiff(dat, dat2)
+
+# For Helby Banks
+HBsize.modeldata <- round(0.75 * nrow(Helby))
+HBmodel  <- Helby[sample ( 1:nrow(Helby), HBsize.modeldata, replace = FALSE),]
+HBtest <- Helby[- c( sample ( 1:nrow(Helby), HBsize.modeldata, replace = FALSE) ),]
+
+# For Tantabiddi
+TBsize.modeldata <- round(0.75 * nrow(Tanta))
+TBmodel  <- Tanta[sample ( 1:nrow(Tanta), TBsize.modeldata, replace = FALSE),]
+TBtest <- Tanta[- c( sample ( 1:nrow(Tanta), TBsize.modeldata, replace = FALSE) ),]
+
+# For Mangrove
+MGsize.modeldata <- round(0.75 * nrow(Mgrove))
+MGmodel  <- Mgrove[sample ( 1:nrow(Mgrove), MGsize.modeldata, replace = FALSE),]
+MGtest <- Mgrove[- c( sample ( 1:nrow(Mgrove), MGsize.modeldata, replace = FALSE) ),]
+
+# For Southern Site
+SSsize.modeldata <- round(0.75 * nrow(South))
+SSmodel  <- South[sample ( 1:nrow(South), SSsize.modeldata, replace = FALSE),]
+SStest <- South[- c( sample ( 1:nrow(South), SSsize.modeldata, replace = FALSE) ),]
+
+setwd("C:/OneDrive/C3_Map/Datasets")
+write.csv(HBmodel, "HB_training_data.csv")
+write.csv(HBtest, "HB_validation_data.csv")
+write.csv(TBmodel, "TB_training_data.csv")
+write.csv(TBtest, "TB_validation_data.csv")
+write.csv(MGmodel, "MG_training_data.csv")
+write.csv(MGtest, "MG_validation_data.csv")
+write.csv(SSmodel, "OS_training_data.csv")
+write.csv(SStest, "OS_validation_data.csv")
+
+
+```
+
+```{r BORUTA ALGORITHM}
+
+##########################
+#### BORUTA ALGORITHM ####
+##########################
+
+library(Boruta)
+# https://www.analyticsvidhya.com/blog/2016/03/select-important-variables-boruta-package/
+
+boruta.trainHB <- Boruta(as.factor(L3_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter, 
+                       data = HBmodel, 
+                       pValue = 0.01, 
+                       doTrace = 2)
+print(boruta.trainHB)
+
+plot(boruta.trainHB, xlab = "", xaxt = "n")
+lz<-lapply(1:ncol(boruta.trainHB$ImpHistory),function(i)
+boruta.trainHB$ImpHistory[is.finite(boruta.trainHB$ImpHistory[,i]),i])
+names(lz) <- colnames(boruta.trainHB$ImpHistory)
+Labels <- sort(sapply(lz,median))
+axis(side = 1,las=2,labels = names(Labels),
+at = 1:ncol(boruta.trainHB$ImpHistory), cex.axis = 0.7)
+
+final.borutaHB <- TentativeRoughFix(boruta.trainHB)
+print(final.borutaHB)
+
+
+boruta.trainTB <- Boruta(as.factor(L3_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter, 
+                       data = TBmodel, 
+                       pValue = 0.01, 
+                       doTrace = 2)
+print(boruta.trainTB)
+
+boruta.trainMG <- Boruta(as.factor(L3_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter, 
+                       data = MGmodel, 
+                       pValue = 0.01, 
+                       doTrace = 2)
+print(boruta.trainMG)
+
+boruta.trainSS <- Boruta(as.factor(L3_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter, 
+                       data = SSmodel, 
+                       pValue = 0.01, 
+                       doTrace = 2)
+print(boruta.trainSS)
+
+
+```
+
+
+
+```{r tree classification}
+
+set.seed(387)
+
+##################################
+#### Level 1 - All Habitats ####
+##################################
+
+L1_Hab.tree <- tree(as.factor(L1_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= model, na.action = na.exclude, method = "class")
+
+
+plot(L1_Hab.tree); text(L1_Hab.tree,cex=0.5)
+summary(L1_Hab.tree) 
+
+
+# Select the best model variables
+L1_Hab.tree <- tree(as.factor(L1_Hab) ~ std5 + BScatter + std25 + mean3 +
+                       mean25 + range25 + BPI_B_50,
+                        data=model, method = "class")
+summary(L1_Hab.tree) # MISCLASSIFICATION RATE 16.54%
+
+
+###########################################
+## Test at each site level individually ##
+###########################################
+
+#################
+## Helby Banks ##
+#################
+
+HBL1_Hab.tree <- tree(as.factor(L1_Hab) ~ Depth + BScatter + curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 + 
+                         mean10 + mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	
+                         range25 + hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	
+                         BPI_F_15 + BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250,
+                     data= HBmodel, na.action = na.exclude, method = "class")
+plot(HBL1_Hab.tree); text(HBL1_Hab.tree,cex=0.5)
+summary(HBL1_Hab.tree)
+
+# Select the best model variables
+HBL1_Hab.tree <- tree(as.factor(L1_Hab) ~ range5 + mean25 + BScatter + Depth + range25 + BPI_B_100 + BPI_B_250 +
+                         BPI_B_50,
+                        data=HBmodel, method = "class")
+summary(HBL1_Hab.tree) # MISCLASSIFICATION RATE 8.04%
+
+
+
+################
+## Tantabiddi ##
+################
+
+TBL1_Hab.tree <- tree(as.factor(L1_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= TBmodel, na.action = na.exclude, method = "class")
+
+plot(TBL1_Hab.tree); text(TBL1_Hab.tree,cex=0.5)
+summary(TBL1_Hab.tree)
+
+# Select the best model variables
+TBL1_Hab.tree <- tree(as.factor(L1_Hab) ~ range25 + BScatter + BPI_B_250 + mean3 + std25 + mean10 + mean25 + BPI_F_25 +
+                         BPI_B_50 + range5 + range10 + std5,
+                        data=TBmodel, method = "class")
+
+summary(TBL1_Hab.tree) # MISCLASSIFICATION RATE 6.66%
+
+
+##############
+## Mangrove ##
+##############
+
+MGL1_Hab.tree <- tree(as.factor(L1_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= MGmodel, na.action = na.exclude, method = "class")
+
+plot(MGL1_Hab.tree); text(MGL1_Hab.tree,cex=0.5)
+summary(MGL1_Hab.tree)
+
+# Select the best model variables
+MGL1_Hab.tree <- tree(as.factor(L1_Hab) ~ mean5 + rugosity + hyp25 + BPI_B_50 + mean3 + BPI_B_250 + BScatter +
+                        hyp5 + std25 +hyp10 + curv_plan + slope + std5 + std10,
+                        data=MGmodel, method = "class")
+
+summary(MGL1_Hab.tree) # MISCLASSIFICATION RATE 4.91%
+
+
+
+###################
+## Southern Site ##
+###################
+
+SSL1_Hab.tree <- tree(as.factor(L1_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= SSmodel, na.action = na.exclude, method = "class")
+
+plot(SSL1_Hab.tree); text(SSL1_Hab.tree,cex=0.5)
+summary(SSL1_Hab.tree)
+
+# Select the best model variables
+SSL1_Hab.tree <- tree(as.factor(L1_Hab) ~ BPI_B_250 + range25 + mean25 + std25 + mean3 + std10 + hyp5 + rugosity +
+                        BPI_B_100 + BPI_B_50 + curv + range5 + std5 + Depth + std3,
+                        data=SSmodel, method = "class")
+
+summary(SSL1_Hab.tree) # MISCLASSIFICATION RATE 0.018%
+
+
+
+########################################################
+## Investigating and Pruning the classification trees ##
+########################################################
+
+###############
+## All sites ##
+###############
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        L1_Hab.fit1  <- cv.tree(L1_Hab.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(L1_Hab.fit1)
+        summary(L1_Hab.fit1)
+        png(file = paste('AllSites_L1_Hab_Misclassification',i, '.png', sep = ''),
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(L1_Hab.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+
+## pruning the tree based on visual inspection of misclassification rate plots using CV
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 4    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        L1_Hab.prune <- prune.misclass(L1_Hab.tree, best = TreeSize) 
+        plot(L1_Hab.prune); text(L1_Hab.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(L1_Hab.prune))
+        png(file = paste('AllSites_L1_Hab_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(L1_Hab.prune); text(L1_Hab.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+## misclassification rate 16.54% with 11 trees
+L1_Hab.prune <- prune.misclass(L1_Hab.tree, best = 11)         # choose best tree size and add value in!!!
+plot(L1_Hab.prune); text(L1_Hab.prune,cex=0.8)
+
+L1_Hab.predict <- predict(L1_Hab.prune, test, type = c("vector"))
+L1_Hab.predict <- as.data.frame(L1_Hab.predict[,2])
+out.predict.L1_Hab <- as.data.frame(cbind(test$Long, test$Lat, 
+   test$L1_Hab, L1_Hab.predict))
+names(out.predict.L1_Hab) <- c("X", "Y", "L1_Hab.test", "Hard_predicted")
+
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'AllSites_L1_Hab_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(L1_Hab.prune); text(L1_Hab.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/All_Sites_L1_Hab_prune.txt")
+L1_Hab.prune 
+sink()
+
+true.type = as.factor(test[,13])
+predicted = predict(L1_Hab.prune, test,type="class")
+table(true.type,predicted)
+
+
+
+##########################################
+## Test at each site level individually ##
+##########################################
+
+#################
+## Helby Banks ##
+#################
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        HBL1_Hab.fit1  <- cv.tree(HBL1_Hab.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(HBL1_Hab.fit1)
+        summary(HBL1_Hab.fit1)
+        png(file = paste('HB_L1_Hab_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(HBL1_Hab.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        HBL1_Hab.prune <- prune.misclass(HBL1_Hab.tree, best = TreeSize) 
+        plot(HBL1_Hab.prune); text(HBL1_Hab.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(HBL1_Hab.prune))
+        png(file = paste('HB_L1_Hab_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(HBL1_Hab.prune); text(HBL1_Hab.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+## misclassification rate 8.04% with 12 trees
+HBL1_Hab.prune <- prune.misclass(HBL1_Hab.tree, best = 12)         # choose best tree size and add value in!!!
+plot(HBL1_Hab.prune); text(HBL1_Hab.prune,cex=0.8)
+
+HBL1_Hab.predict <- predict(HBL1_Hab.prune, HBtest, type = c("vector"))
+HBL1_Hab.predict <- as.data.frame(HBL1_Hab.predict[,2])
+out.predict.HBL1_Hab <- as.data.frame(cbind(HBtest$Long, HBtest$Lat, 
+   HBtest$L1_Hab, HBL1_Hab.predict))
+names(out.predict.HBL1_Hab) <- c("X", "Y", "L1_Hab.test", "Hard_predicted")
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'HB_L1_Hab_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(HBL1_Hab.prune); text(HBL1_Hab.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/HB_L1_Hab_prune.txt")
+HBL1_Hab.prune 
+sink()
+
+HBtrue.type = as.factor(HBtest[,13])
+HBpredicted = predict(HBL1_Hab.prune, HBtest,type="class")
+table(HBtrue.type,HBpredicted)
+
+
+################
+## Tantabiddi ##
+################
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        TBL1_Hab.fit1  <- cv.tree(TBL1_Hab.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(TBL1_Hab.fit1)
+        summary(TBL1_Hab.fit1)
+        png(file = paste('TB_L1_Hab_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(TBL1_Hab.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 12   ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        TBL1_Hab.prune <- prune.misclass(TBL1_Hab.tree, best = TreeSize) 
+        plot(TBL1_Hab.prune); text(TBL1_Hab.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(TBL1_Hab.prune))
+        png(file = paste('TB_L1_Hab_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(TBL1_Hab.prune); text(TBL1_Hab.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+## misclassification rate 6.7% with 16 trees
+TBL1_Hab.prune <- prune.misclass(TBL1_Hab.tree, best = 18)         # choose best tree size and add value in!!!
+plot(TBL1_Hab.prune); text(TBL1_Hab.prune,cex=0.8)
+
+TBL1_Hab.predict <- predict(TBL1_Hab.prune, TBtest, type = c("vector"))
+TBL1_Hab.predict <- as.data.frame(TBL1_Hab.predict[,2])
+out.predict.TBL1_Hab <- as.data.frame(cbind(TBtest$Long, TBtest$Lat, 
+   TBtest$L1_Hab, TBL1_Hab.predict))
+names(out.predict.TBL1_Hab) <- c("X", "Y", "L1_Hab.test",  "Hard_predicted")
+
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'TB_L1_Hab_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(TBL1_Hab.prune); text(TBL1_Hab.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/TB_L1_Hab_prune.txt")
+TBL1_Hab.prune 
+sink()
+
+TBtrue.type = as.factor(TBtest[,13])
+TBpredicted = predict(TBL1_Hab.prune, TBtest,type="class")
+table(TBtrue.type,TBpredicted)
+
+
+##############
+## Mangrove ##
+##############
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        MGL1_Hab.fit1  <- cv.tree(MGL1_Hab.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(MGL1_Hab.fit1)
+        summary(MGL1_Hab.fit1)
+        png(file = paste('MG_L1_Hab_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(MGL1_Hab.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 8    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        MGL1_Hab.prune <- prune.misclass(MGL1_Hab.tree, best = TreeSize) 
+        plot(MGL1_Hab.prune); text(MGL1_Hab.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(MGL1_Hab.prune))
+        png(file = paste('MG_L1_Hab_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(MGL1_Hab.prune); text(MGL1_Hab.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 5.69% with 14 trees
+MGL1_Hab.prune <- prune.misclass(MGL1_Hab.tree, best = 14)         # choose best tree size and add value in!!!
+plot(MGL1_Hab.prune); text(MGL1_Hab.prune,cex=0.8)
+
+MGL1_Hab.predict <- predict(MGL1_Hab.prune, MGtest, type = c("vector"))
+MGL1_Hab.predict <- as.data.frame(MGL1_Hab.predict[,2])
+out.predict.MGL1_Hab <- as.data.frame(cbind(MGtest$Long, MGtest$Lat, 
+   MGtest$L1_Hab, MGL1_Hab.predict))
+names(out.predict.MGL1_Hab) <- c("X", "Y", "L1_Hab.test",  "Hard_predicted")
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'MG_L1_Hab_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(MGL1_Hab.prune); text(MGL1_Hab.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/MG_L1_Hab_prune.txt")
+MGL1_Hab.prune 
+sink()
+
+MGtrue.type = as.factor(MGtest[,13])
+MGpredicted = predict(MGL1_Hab.prune, MGtest,type="class")
+table(MGtrue.type,MGpredicted)
+
+#######################
+#### Southern Site ####
+######################
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        SSL1_Hab.fit1  <- cv.tree(SSL1_Hab.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(SSL1_Hab.fit1)
+        summary(SSL1_Hab.fit1)
+        png(file = paste('SS_L1_Hab_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(SSL1_Hab.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+
+par(mfrow=c(2,2)) ## makes graphs appear in 2 rows and 2 columns - 4 per page
+
+TreeSize <- 8    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        SSL1_Hab.prune <- prune.misclass(SSL1_Hab.tree, best = TreeSize) 
+        plot(SSL1_Hab.prune); text(SSL1_Hab.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(SSL1_Hab.prune))
+        png(file = paste('SS_L1_Hab_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(SSL1_Hab.prune); text(SSL1_Hab.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 6.5% with 12 trees
+SSL1_Hab.prune <- prune.misclass(SSL1_Hab.tree, best = 12)         # choose best tree size and add value in!!!
+plot(SSL1_Hab.prune); text(SSL1_Hab.prune,cex=0.8)
+
+SSL1_Hab.predict <- predict(SSL1_Hab.prune, SStest, type = c("vector"))
+SSL1_Hab.predict <- as.data.frame(SSL1_Hab.predict[,2])
+out.predict.SSL1_Hab <- as.data.frame(cbind(SStest$Long, SStest$Lat, 
+   SStest$L1_Hab, SSL1_Hab.predict))
+names(out.predict.SSL1_Hab) <- c("X", "Y", "L1_Hab.test",  "Hard_predicted")
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'SS_L1_Hab_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(SSL1_Hab.prune); text(SSL1_Hab.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/SS_L1_Hab_prune.txt")
+SSL1_Hab.prune 
+sink()
+
+SStrue.type = as.factor(SStest[,13])
+SSpredicted = predict(SSL1_Hab.prune, SStest,type="class")
+table(SStrue.type,SSpredicted)
+
+
+#####################################################
+## Predict Level 1 CATAMI  Substrate for each site ##
+#####################################################
+
+
+L1_Hab.rs.predict <- predict(L1_Hab.prune, points1, type = c("vector"))
+L1_Hab.predict <- as.data.frame(L1_Hab.rs.predict[,2])
+pred.L1_Hab <- as.data.frame(cbind(points1$Long, points1$Lat,  L1_Hab.predict))
+names(pred.L1_Hab) <- c("X","Y", "Hard_predicted")
+
+L1_Hab.rs.predict2 <- predict(L1_Hab.prune, points2, type = c("vector"))
+L1_Hab.predict2 <- as.data.frame(L1_Hab.rs.predict2[,2])
+pred.L1_Hab2 <- as.data.frame(cbind(points2$Long, points2$Lat,  L1_Hab.predict2))
+names(pred.L1_Hab2) <- c("X","Y", "Hard_predicted")
+
+L1_Hab.rs.predict3 <- predict(L1_Hab.prune, points3, type = c("vector"))
+L1_Hab.predict3 <- as.data.frame(L1_Hab.rs.predict3[,2])
+pred.L1_Hab3 <- as.data.frame(cbind(points3$Long, points3$Lat,  L1_Hab.predict3))
+names(pred.L1_Hab3) <- c("X","Y", "Hard_predicted")
+
+
+#########################
+## Helby Banks Predict ##
+#########################
+
+HB.L1_Hab.rs.predict <- predict(HBL1_Hab.prune, HBpoints, type = c("vector"))
+HB.L1_Hab.predict <- as.data.frame(HB.L1_Hab.rs.predict[,2])
+predHB.L1_Hab <- as.data.frame(cbind(HBpoints$Long, HBpoints$Lat,  HB.L1_Hab.predict))
+names(predHB.L1_Hab) <- c("X","Y", "Hard_predicted")
+
+
+#######################
+## Tantabiddi Predict ##
+#######################
+
+TB.L1_Hab.rs.predict <- predict(TBL1_Hab.prune, TBpoints, type = c("vector"))
+TB.L1_Hab.predict <- as.data.frame(TB.L1_Hab.rs.predict[,2])
+predTB.L1_Hab <- as.data.frame(cbind(TBpoints$Long, TBpoints$Lat,  TB.L1_Hab.predict))
+names(predTB.L1_Hab) <- c("X", "Y", "Hard_predicted")
+
+#######################
+## Mangrove Predict ##
+######################
+
+MG.L1_Hab.rs.predict <- predict(MGL1_Hab.prune, MGpoints, type = c("vector"))
+MG.L1_Hab.predict <- as.data.frame(MG.L1_Hab.rs.predict[,2])
+predMG.L1_Hab <- as.data.frame(cbind(MGpoints$Lat, MGpoints$Long, MG.L1_Hab.predict))
+names(predMG.L1_Hab) <- c("Y", "X", "Hard_predicted")
+
+###########################
+## Southern Site Predict ##
+###########################
+
+SS.L1_Hab.rs.predict <- predict(SSL1_Hab.prune, SSpoints, type = c("vector"))
+SS.L1_Hab.predict <- as.data.frame(SS.L1_Hab.rs.predict[,2])
+predSS.L1_Hab <- as.data.frame(cbind(SSpoints$Lat, SSpoints$Long, SS.L1_Hab.predict))
+names(predSS.L1_Hab) <- c("Y", "X", "Hard_predicted")
+
+
+#########################
+## Export to ASCII ##
+#########################
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Lv1Outputs")
+
+coordinates(pred.L1_Hab) <- ~X+Y
+ext <- extent(pred.L1_Hab)
+table(diff(pred.L1_Hab@coords[,1]))
+r <- raster(ext=ext,res=0.0000483000000031097)
+# Final raster
+to_ascii1 <- rasterize(pred.L1_Hab, r, 'Hard_predicted')
+# Write raster to ascii
+writeRaster(to_ascii1,'L1_Hard1.asc', format='ascii', overwrite =TRUE)
+
+coordinates(pred.L1_Hab2) <- ~X+Y
+ext2 <- extent(pred.L1_Hab2)
+table(diff(pred.L1_Hab2@coords[,1]))
+r2 <- raster(ext=ext2,res=0.0000483000000031097)
+# Final raster
+to_ascii2 <- rasterize(pred.L1_Hab2, r2, 'Hard_predicted')
+# Write raster to ascii
+writeRaster(to_ascii2,'L1_Hard2.asc', format='ascii', overwrite =TRUE)
+
+coordinates(pred.L1_Hab3) <- ~X+Y
+ext3 <- extent(pred.L1_Hab3)
+table(diff(pred.L1_Hab3@coords[,1]))
+r3 <- raster(ext=ext3,res=0.0000483000000031097)
+# Final raster
+to_ascii3 <- rasterize(pred.L1_Hab3, r3, 'Hard_predicted')
+# Write raster to ascii
+writeRaster(to_ascii3,'L1_Hard3.asc', format='ascii', overwrite =TRUE)
+
+
+#################
+## Helby Banks ##
+################
+
+coordinates(predHB.L1_Hab) <- ~X+Y
+extHB <- extent(predHB.L1_Hab)
+table(diff(predHB.L1_Hab@coords[,1]))
+rHB <- raster(ext=extHB,res=0.0000483000000031097)
+# Final raster
+to_asciiHB1 <- rasterize(predHB.L1_Hab, rHB, 'Hard_predicted')
+# Write raster to ascii
+writeRaster(to_asciiHB1,'HBL1_Hard.asc', format='ascii', overwrite =TRUE)
+
+
+################
+## Tantabiddi ##
+###############
+
+coordinates(predTB.L1_Hab) <- ~X+Y
+extTB <- extent(predTB.L1_Hab)
+table(diff(predTB.L1_Hab@coords[,1]))
+rTB <- raster(ext=extTB,res=0.0000483000000031097)
+# Final raster
+to_asciiTB <- rasterize(predTB.L1_Hab, rTB, 'Hard_predicted')
+# Write raster to ascii
+writeRaster(to_asciiTB,'TBL1_Hard.asc', format='ascii', overwrite =TRUE)
+
+
+##############
+## Mangrove ##
+##############
+
+coordinates(predMG.L1_Hab) <- ~X+Y
+extMG <- extent(predMG.L1_Hab)
+table(diff(predMG.L1_Hab@coords[,1]))
+rMG <- raster(ext=extMG,res=0.0000483000000031097)
+# Final raster
+to_asciiMG <- rasterize(predMG.L1_Hab, rMG, 'Hard_predicted')
+# Write raster to ascii
+writeRaster(to_asciiMG,'MGL1_Hard.asc', format='ascii', overwrite =TRUE)
+
+
+###################
+## Southern Site ##
+##################
+
+coordinates(predSS.L1_Hab) <- ~X+Y
+extSS <- extent(predSS.L1_Hab)
+table(diff(predSS.L1_Hab@coords[,1]))
+rSS <- raster(ext=extSS,res=0.000048500000005447)
+# Final raster
+to_asciiSS <- rasterize(predSS.L1_Hab, rSS, 'Hard_predicted')
+# Write raster to ascii
+writeRaster(to_asciiSS,'SSL1_Hard.asc', format='ascii', overwrite =TRUE)
+
+
+
+
+################################################################
+## WRITE OUT.PREDICT files to CSV to use for ROC CALCULATIONS ##
+################################################################
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/ROCtests")
+
+write.csv(out.predict.HBL1_Hab, "1_OutPredict_HB_L1_Hab_5m.csv")
+write.csv(out.predict.TBL1_Hab, "2_OutPredict_TB_L1_Hab_5m.csv")
+write.csv(out.predict.MGL1_Hab, "3_OutPredict_MG_L1_Hab_5m.csv")
+write.csv(out.predict.SSL1_Hab, "4_OutPredict_SS_L1_Hab_5m.csv")
+write.csv(out.predict.L1_Hab, "5_OutPredict_L1_Hab_5m.csv")
+
+```
+
+
+
+
+
+
+```{r tree classification}
+
+set.seed(387)
+
+##################################
+#### Level 2 - All Habitats ####
+##################################
+
+L2_Hab.tree <- tree(as.factor(L2_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= model, na.action = na.exclude, method = "class")
+
+
+plot(L2_Hab.tree); text(L2_Hab.tree,cex=0.5)
+summary(L2_Hab.tree) 
+
+# Highly correlated variables removed
+# hyp removed as well as curv_plan, curv_prof, east, mean5, mean10, std10, BPI_F_15, range3, BPI_B_100
+# BPI_F_25, range5, std5, std25
+
+# L2_Hab.tree <- tree(as.factor(L2_Hab) ~ curv +	slope +	mean3 +
+  #                     mean25 +	std3  +	range10 +	range25 +
+   #                    rugosity +	north +	BPI_F_10  +
+    #                   BPI_B_50 + BPI_B_250 +	Depth,
+     #                data= model, na.action = na.exclude, method = "class")
+
+# Select the best model variables
+L2_Hab.tree <- tree(as.factor(L2_Hab) ~ std5 + BScatter + range25 + BPI_B_250 + mean25 + mean3 + std10 + mean5 +
+                       mean10 + BPI_B_50,
+                        data=model, method = "class")
+summary(L2_Hab.tree) # MISCLASSIFICATION RATE 28.5%
+
+
+###########################################
+## Test at each site level individually ##
+###########################################
+
+#################
+## Helby Banks ##
+#################
+
+HBL2_Hab.tree <- tree(as.factor(L2_Hab) ~ Depth + BScatter + curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 + 
+                         mean10 + mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	
+                         range25 + hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	
+                         BPI_F_15 + BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250,
+                     data= HBmodel, na.action = na.exclude, method = "class")
+plot(HBL2_Hab.tree); text(HBL2_Hab.tree,cex=0.5)
+summary(HBL2_Hab.tree)
+
+# Select the best model variables
+HBL2_Hab.tree <- tree(as.factor(L2_Hab) ~ Depth + mean25 + BScatter + BPI_B_250 + mean10 + range5 + range25 +
+                         BPI_B_50,
+                        data=HBmodel, method = "class")
+summary(HBL2_Hab.tree) # MISCLASSIFICATION RATE 18.31%
+
+
+
+################
+## Tantabiddi ##
+################
+
+TBL2_Hab.tree <- tree(as.factor(L2_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= TBmodel, na.action = na.exclude, method = "class")
+
+plot(TBL2_Hab.tree); text(TBL2_Hab.tree,cex=0.5)
+summary(TBL2_Hab.tree)
+
+# Select the best model variables
+TBL2_Hab.tree <- tree(as.factor(L2_Hab) ~ range25 + BScatter + BPI_B_250 + mean3 + std25 + mean10 + mean25 +
+                         BPI_B_50,
+                        data=TBmodel, method = "class")
+
+summary(TBL2_Hab.tree) # MISCLASSIFICATION RATE 12.41%
+
+
+##############
+## Mangrove ##
+##############
+
+MGL2_Hab.tree <- tree(as.factor(L2_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= MGmodel, na.action = na.exclude, method = "class")
+
+plot(MGL2_Hab.tree); text(MGL2_Hab.tree,cex=0.5)
+summary(MGL2_Hab.tree)
+
+# Select the best model variables
+MGL2_Hab.tree <- tree(as.factor(L2_Hab) ~ mean5 + BPI_B_100 + mean10 + std25 + range10 + range25 + mean3 + std10 +
+                         BPI_B_250 + std3 + hyp10,
+                        data=MGmodel, method = "class")
+
+summary(MGL2_Hab.tree) # MISCLASSIFICATION RATE 6.14%
+
+
+
+###################
+## Southern Site ##
+###################
+
+SSL2_Hab.tree <- tree(as.factor(L2_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= SSmodel, na.action = na.exclude, method = "class")
+
+plot(SSL2_Hab.tree); text(SSL2_Hab.tree,cex=0.5)
+summary(SSL2_Hab.tree)
+
+# Select the best model variables
+SSL2_Hab.tree <- tree(as.factor(L2_Hab) ~ range25 + BPI_B_50 + mean3 + hyp25 + BPI_B_250 + north + mean5 + 
+                        Depth + mean10 + rugosity + std25 + mean25 + std10,
+                        data=SSmodel, method = "class")
+
+summary(SSL2_Hab.tree) # MISCLASSIFICATION RATE 3.71%
+
+
+
+########################################################
+## Investigating and Pruning the classification trees ##
+########################################################
+
+###############
+## All sites ##
+###############
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        L2_Hab.fit1  <- cv.tree(L2_Hab.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(L2_Hab.fit1)
+        summary(L2_Hab.fit1)
+        png(file = paste('AllSites_L2_Hab_Misclassification',i, '.png', sep = ''),
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(L2_Hab.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 8    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        L2_Hab.prune <- prune.misclass(L2_Hab.tree, best = TreeSize) 
+        plot(L2_Hab.prune); text(L2_Hab.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(L2_Hab.prune))
+        png(file = paste('AllSites_L2_Hab_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(L2_Hab.prune); text(L2_Hab.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 28.47% with 11 trees
+L2_Hab.prune <- prune.misclass(L2_Hab.tree, best = 11)         # choose best tree size and add value in!!!
+plot(L2_Hab.prune); text(L2_Hab.prune,cex=0.8)
+
+L2_Hab.predict <- predict(L2_Hab.prune, test, type = c("vector"))
+L2_Hab.predict <- as.data.frame(L2_Hab.predict)
+out.predict.L2_Hab <- as.data.frame(cbind(test$Long, test$Lat, 
+   test$L2_Hab, L2_Hab.predict))
+names(out.predict.L2_Hab) <- c("X", "Y", "L2_Hab.test",  "2_Cobbles_predicted",  "3_Rock_predicted",
+                               "4_Pebbles_predicted",  "5_Sand_predicted")
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'AllSites_L2_Hab_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(L2_Hab.prune); text(L2_Hab.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/All_Sites_L2_Hab_prune.txt")
+L2_Hab.prune 
+sink()
+
+true.type = as.factor(test[,14])
+predicted = predict(L2_Hab.prune, test,type="class")
+table(true.type,predicted)
+
+
+
+###############################################
+#### Test at each site level individually ####
+###############################################
+
+#####################
+#### Helby Banks ####
+#####################
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        HBL2_Hab.fit1  <- cv.tree(HBL2_Hab.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(HBL2_Hab.fit1)
+        summary(HBL2_Hab.fit1)
+        png(file = paste('HB_L2_Hab_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(HBL2_Hab.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        HBL2_Hab.prune <- prune.misclass(HBL2_Hab.tree, best = TreeSize) 
+        plot(HBL2_Hab.prune); text(HBL2_Hab.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(HBL2_Hab.prune))
+        png(file = paste('HB_L2_Hab_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(HBL2_Hab.prune); text(HBL2_Hab.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 20.15% with 13 trees
+HBL2_Hab.prune <- prune.misclass(HBL2_Hab.tree, best = 12)         # choose best tree size and add value in!!!
+plot(HBL2_Hab.prune); text(HBL2_Hab.prune,cex=0.8)
+
+HBL2_Hab.predict <- predict(HBL2_Hab.prune, HBtest, type = c("vector"))
+HBL2_Hab.predict <- as.data.frame(HBL2_Hab.predict)
+out.predict.HBL2_Hab <- as.data.frame(cbind(HBtest$Long, HBtest$Lat, 
+   HBtest$L2_Hab, HBL2_Hab.predict))
+names(out.predict.HBL2_Hab) <- c("X", "Y", "L2_Hab.test",  "2_Cobbles_predicted",  "3_Rock_predicted",
+                               "4_Pebbles_predicted",  "5_Sand_predicted")
+
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'HB_L2_Hab_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(HBL2_Hab.prune); text(HBL2_Hab.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/HB_L2_Hab_prune.txt")
+HBL2_Hab.prune 
+sink()
+
+HBtrue.type = as.factor(HBtest[,14])
+HBpredicted = predict(HBL2_Hab.prune, HBtest,type="class")
+table(HBtrue.type,HBpredicted)
+
+
+####################
+#### Tantabiddi ####
+####################
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        TBL2_Hab.fit1  <- cv.tree(TBL2_Hab.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(TBL2_Hab.fit1)
+        summary(TBL2_Hab.fit1)
+        png(file = paste('TB_L2_Hab_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(TBL2_Hab.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 12    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        TBL2_Hab.prune <- prune.misclass(TBL2_Hab.tree, best = TreeSize) 
+        plot(TBL2_Hab.prune); text(TBL2_Hab.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(TBL2_Hab.prune))
+        png(file = paste('TB_L2_Hab_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(TBL2_Hab.prune); text(TBL2_Hab.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 12.41% with 15 trees
+TBL2_Hab.prune <- prune.misclass(TBL2_Hab.tree, best = 15)         # choose best tree size and add value in!!!
+plot(TBL2_Hab.prune); text(TBL2_Hab.prune,cex=0.8)
+
+TBL2_Hab.predict <- predict(TBL2_Hab.prune, TBtest, type = c("vector"))
+TBL2_Hab.predict <- as.data.frame(TBL2_Hab.predict)
+out.predict.TBL2_Hab <- as.data.frame(cbind(TBtest$Long, TBtest$Lat, 
+   TBtest$L2_Hab, TBL2_Hab.predict))
+names(out.predict.TBL2_Hab) <- c("X", "Y", "L2_Hab.test",  "2_Cobbles_predicted",  "3_Rock_predicted",
+                               "4_Pebbles_predicted",  "5_Sand_predicted")
+
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'TB_L2_Hab_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(TBL2_Hab.prune); text(TBL2_Hab.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/TB_L2_Hab_prune.txt")
+TBL2_Hab.prune 
+sink()
+
+TBtrue.type = as.factor(TBtest[,14])
+TBpredicted = predict(TBL2_Hab.prune, TBtest,type="class")
+table(TBtrue.type,TBpredicted)
+
+
+##################
+#### Mangrove ####
+##################
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        MGL2_Hab.fit1  <- cv.tree(MGL2_Hab.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(MGL2_Hab.fit1)
+        summary(MGL2_Hab.fit1)
+        png(file = paste('MG_L2_Hab_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(MGL2_Hab.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 10    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        MGL2_Hab.prune <- prune.misclass(MGL2_Hab.tree, best = TreeSize) 
+        plot(MGL2_Hab.prune); text(MGL2_Hab.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(MGL2_Hab.prune))
+        png(file = paste('MG_L2_Hab_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(MGL2_Hab.prune); text(MGL2_Hab.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 10.28% with 13 trees
+MGL2_Hab.prune <- prune.misclass(MGL2_Hab.tree, best = 13)         # choose best tree size and add value in!!!
+plot(MGL2_Hab.prune); text(MGL2_Hab.prune,cex=0.8)
+
+MGL2_Hab.predict <- predict(MGL2_Hab.prune, MGtest, type = c("vector"))
+MGL2_Hab.predict <- as.data.frame(MGL2_Hab.predict)
+out.predict.MGL2_Hab <- as.data.frame(cbind(MGtest$Long, MGtest$Lat, 
+   MGtest$L2_Hab, MGL2_Hab.predict))
+names(out.predict.MGL2_Hab) <- c("X", "Y", "L2_Hab.test",  "2_Cobbles_predicted",  "3_Rock_predicted",
+                               "4_Pebbles_predicted",  "5_Sand_predicted")
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'MG_L2_Hab_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(MGL2_Hab.prune); text(MGL2_Hab.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/MG_L2_Hab_prune.txt")
+MGL2_Hab.prune 
+sink()
+
+MGtrue.type = as.factor(MGtest[,14])
+MGpredicted = predict(MGL2_Hab.prune, MGtest,type="class")
+table(MGtrue.type,MGpredicted)
+
+#######################
+#### Southern Site ####
+######################
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        SSL2_Hab.fit1  <- cv.tree(SSL2_Hab.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(SSL2_Hab.fit1)
+        summary(SSL2_Hab.fit1)
+        png(file = paste('SS_L2_Hab_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(SSL2_Hab.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+
+par(mfrow=c(2,2)) ## makes graphs appear in 2 rows and 2 columns - 4 per page
+
+TreeSize <- 12    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        SSL2_Hab.prune <- prune.misclass(SSL2_Hab.tree, best = TreeSize) 
+        plot(SSL2_Hab.prune); text(SSL2_Hab.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(SSL2_Hab.prune))
+        png(file = paste('SS_L2_Hab_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(SSL2_Hab.prune); text(SSL2_Hab.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 10.22% with 14 trees
+SSL2_Hab.prune <- prune.misclass(SSL2_Hab.tree, best = 14)         # choose best tree size and add value in!!!
+plot(SSL2_Hab.prune); text(SSL2_Hab.prune,cex=0.8)
+
+SSL2_Hab.predict <- predict(SSL2_Hab.prune, SStest, type = c("vector"))
+SSL2_Hab.predict <- as.data.frame(SSL2_Hab.predict)
+out.predict.SSL2_Hab <- as.data.frame(cbind(SStest$Long, SStest$Lat, 
+   SStest$L2_Hab, SSL2_Hab.predict))
+names(out.predict.SSL2_Hab) <- c("X", "Y", "L2_Hab.test",  "2_Cobbles_predicted",  "3_Rock_predicted",
+                               "4_Pebbles_predicted",  "5_Sand_predicted")
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'SS_L2_Hab_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(SSL2_Hab.prune); text(SSL2_Hab.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/SS_L2_Hab_prune.txt")
+SSL2_Hab.prune 
+sink()
+
+SStrue.type = as.factor(SStest[,14])
+SSpredicted = predict(SSL2_Hab.prune, SStest,type="class")
+table(SStrue.type,SSpredicted)
+
+
+#####################################################
+## Predict Level 2 CATAMI  Substrate for each site ##
+#####################################################
+
+###################
+## ALL SITES ##
+###################
+
+
+L2_Hab.rs.predict1 <- predict(L2_Hab.prune, points1, type = c("vector"))
+L2_Hab.predict1 <- as.data.frame(L2_Hab.rs.predict1)
+pred.L2_Hab1 <- as.data.frame(cbind(points1$Long, points1$Lat,  L2_Hab.predict1))
+names(pred.L2_Hab1) <- c("X","Y", "2_Cobbles_predicted",  "3_Rock_predicted",
+                               "4_Pebbles_predicted",  "5_Sand_predicted")
+
+L2_Hab.rs.predict2 <- predict(L2_Hab.prune, points2, type = c("vector"))
+L2_Hab.predict2 <- as.data.frame(L2_Hab.rs.predict2)
+pred.L2_Hab2 <- as.data.frame(cbind(points2$Long, points2$Lat,  L2_Hab.predict2))
+names(pred.L2_Hab2) <- c("X","Y", "2_Cobbles_predicted",  "3_Rock_predicted",
+                               "4_Pebbles_predicted",  "5_Sand_predicted")
+
+L2_Hab.rs.predict3 <- predict(L2_Hab.prune, points3, type = c("vector"))
+L2_Hab.predict3 <- as.data.frame(L2_Hab.rs.predict3)
+pred.L2_Hab3 <- as.data.frame(cbind(points3$Long, points3$Lat,  L2_Hab.predict3))
+names(pred.L2_Hab3) <- c("X","Y", "2_Cobbles_predicted",  "3_Rock_predicted",
+                               "4_Pebbles_predicted",  "5_Sand_predicted")
+
+#########################
+## Helby Banks Predict ##
+#########################
+
+HB.L2_Hab.rs.predict <- predict(HBL2_Hab.prune, HBpoints, type = c("vector"))
+HB.L2_Hab.predict <- as.data.frame(HB.L2_Hab.rs.predict)
+predHB.L2_Hab <- as.data.frame(cbind(HBpoints$Long, HBpoints$Lat,  HB.L2_Hab.predict))
+names(predHB.L2_Hab) <- c("X","Y", "2_Cobbles_predicted",  "3_Rock_predicted",
+                               "4_Pebbles_predicted",  "5_Sand_predicted")
+
+
+#######################
+## Tantabiddi Predict ##
+#######################
+
+TB.L2_Hab.rs.predict <- predict(TBL2_Hab.prune, TBpoints, type = c("vector"))
+TB.L2_Hab.predict <- as.data.frame(TB.L2_Hab.rs.predict)
+predTB.L2_Hab <- as.data.frame(cbind(TBpoints$Long, TBpoints$Lat,  TB.L2_Hab.predict))
+names(predTB.L2_Hab) <- c("X", "Y", "2_Cobbles_predicted",  "3_Rock_predicted",
+                               "4_Pebbles_predicted",  "5_Sand_predicted")
+
+#######################
+## Mangrove Predict ##
+######################
+
+MG.L2_Hab.rs.predict <- predict(MGL2_Hab.prune, MGpoints, type = c("vector"))
+MG.L2_Hab.predict <- as.data.frame(MG.L2_Hab.rs.predict)
+predMG.L2_Hab <- as.data.frame(cbind(MGpoints$Lat, MGpoints$Long, MG.L2_Hab.predict))
+names(predMG.L2_Hab) <- c("Y", "X", "2_Cobbles_predicted",  "3_Rock_predicted",
+                               "4_Pebbles_predicted",  "5_Sand_predicted")
+
+###########################
+## Southern Site Predict ##
+###########################
+
+SS.L2_Hab.rs.predict <- predict(SSL2_Hab.prune, SSpoints, type = c("vector"))
+SS.L2_Hab.predict <- as.data.frame(SS.L2_Hab.rs.predict)
+predSS.L2_Hab <- as.data.frame(cbind(SSpoints$Lat, SSpoints$Long, SS.L2_Hab.predict))
+names(predSS.L2_Hab) <- c("Y", "X", "2_Cobbles_predicted",  "3_Rock_predicted",
+                               "4_Pebbles_predicted",  "5_Sand_predicted")
+
+
+#########################
+## Export to ASCII ##
+#########################
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Lv2Outputs")
+
+coordinates(pred.L2_Hab1) <- ~X+Y
+ext <- extent(pred.L2_Hab1)
+table(diff(pred.L2_Hab1@coords[,1]))
+r <- raster(ext=ext,res=0.0000483000000031097)
+# Final raster
+to_ascii1_2 <- rasterize(pred.L2_Hab1, r, '2_Cobbles_predicted')
+to_ascii1_3 <- rasterize(pred.L2_Hab1, r, '3_Rock_predicted')
+to_ascii1_4 <- rasterize(pred.L2_Hab1, r, '4_Pebbles_predicted')
+to_ascii1_5 <- rasterize(pred.L2_Hab1, r, '5_Sand_predicted')
+# Write raster to ascii
+writeRaster(to_ascii1_2,'L2_2cob1.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_ascii1_3,'L2_3rock1.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_ascii1_4,'L2_4peb1.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_ascii1_5,'L2_5sand1.asc', format='ascii', overwrite =TRUE)
+
+
+coordinates(pred.L2_Hab2) <- ~X+Y
+ext2 <- extent(pred.L2_Hab2)
+table(diff(pred.L2_Hab2@coords[,1]))
+r2 <- raster(ext=ext2,res=0.0000483000000031097)
+# Final raster
+to_ascii2_2 <- rasterize(pred.L2_Hab2, r2, '2_Cobbles_predicted')
+to_ascii2_3 <- rasterize(pred.L2_Hab2, r2, '3_Rock_predicted')
+to_ascii2_4 <- rasterize(pred.L2_Hab2, r2, '4_Pebbles_predicted')
+to_ascii2_5 <- rasterize(pred.L2_Hab2, r2, '5_Sand_predicted')
+# Write raster to ascii
+writeRaster(to_ascii2_2,'L2_2cob2.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_ascii2_3,'L2_3rock2.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_ascii2_4,'L2_4peb2.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_ascii2_5,'L2_5sand2.asc', format='ascii', overwrite =TRUE)
+
+
+coordinates(pred.L2_Hab3) <- ~X+Y
+ext3 <- extent(pred.L2_Hab3)
+table(diff(pred.L2_Hab3@coords[,1]))
+r3 <- raster(ext=ext3,res=0.0000483000000031097)
+# Final raster
+to_ascii3_2 <- rasterize(pred.L2_Hab3, r3, '2_Cobbles_predicted')
+to_ascii3_3 <- rasterize(pred.L2_Hab3, r3, '3_Rock_predicted')
+to_ascii3_4 <- rasterize(pred.L2_Hab3, r3, '4_Pebbles_predicted')
+to_ascii3_5 <- rasterize(pred.L2_Hab3, r3, '5_Sand_predicted')
+# Write raster to ascii
+writeRaster(to_ascii3_2,'L2_2cob3.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_ascii3_3,'L2_3rock3.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_ascii3_4,'L2_4peb3.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_ascii3_5,'L2_5sand3.asc', format='ascii', overwrite =TRUE)
+
+
+#################
+## Helby Banks ##
+#################
+
+coordinates(predHB.L2_Hab) <- ~X+Y
+extHB <- extent(predHB.L2_Hab)
+table(diff(predHB.L2_Hab@coords[,1]))
+rHB <- raster(ext=extHB,res=0.0000483000000031097)
+# Final raster
+to_asciiHB2 <- rasterize(predHB.L2_Hab, rHB, '2_Cobbles_predicted')
+to_asciiHB3 <- rasterize(predHB.L2_Hab, rHB, '3_Rock_predicted')
+to_asciiHB4 <- rasterize(predHB.L2_Hab, rHB, '4_Pebbles_predicted')
+to_asciiHB5 <- rasterize(predHB.L2_Hab, rHB, '5_Sand_predicted')
+# Write raster to ascii
+writeRaster(to_asciiHB2,'HBL2_2cob.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_asciiHB3,'HBL2_3rock.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_asciiHB4,'HBL2_4peb.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_asciiHB5,'HBL2_5sand.asc', format='ascii', overwrite =TRUE)
+
+
+#################
+## Tantabiddi ##
+#################
+
+coordinates(predTB.L2_Hab) <- ~X+Y
+extTB <- extent(predTB.L2_Hab)
+table(diff(predTB.L2_Hab@coords[,1]))
+rTB <- raster(ext=extTB,res=0.0000483000000031097)
+# Final raster
+to_asciiTB2 <- rasterize(predTB.L2_Hab, rTB, '2_Cobbles_predicted')
+to_asciiTB3 <- rasterize(predTB.L2_Hab, rTB, '3_Rock_predicted')
+to_asciiTB4 <- rasterize(predTB.L2_Hab, rTB, '4_Pebbles_predicted')
+to_asciiTB5 <- rasterize(predTB.L2_Hab, rTB, '5_Sand_predicted')
+# Write raster to ascii
+writeRaster(to_asciiTB2,'TBL2_2cob.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_asciiTB3,'TBL2_3rock.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_asciiTB4,'TBL2_4peb.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_asciiTB5,'TBL2_5sand.asc', format='ascii', overwrite =TRUE)
+
+
+##############
+## Mangrove ##
+##############
+
+coordinates(predMG.L2_Hab) <- ~X+Y
+extMG <- extent(predMG.L2_Hab)
+table(diff(predMG.L2_Hab@coords[,1]))
+rMG <- raster(ext=extMG,res=0.0000483000000031097)
+# Final raster
+to_asciiMG2 <- rasterize(predMG.L2_Hab, rMG, '2_Cobbles_predicted')
+to_asciiMG3 <- rasterize(predMG.L2_Hab, rMG, '3_Rock_predicted')
+to_asciiMG4 <- rasterize(predMG.L2_Hab, rMG, '4_Pebbles_predicted')
+to_asciiMG5 <- rasterize(predMG.L2_Hab, rMG, '5_Sand_predicted')
+# Write raster to ascii
+writeRaster(to_asciiMG2,'MGL2_2cob.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_asciiMG3,'MGL2_3rock.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_asciiMG4,'MGL2_4peb.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_asciiMG5,'MGL2_5sand.asc', format='ascii', overwrite =TRUE)
+
+
+###################
+## Southern Site ##
+###################
+
+coordinates(predSS.L2_Hab) <- ~X+Y
+extSS <- extent(predSS.L2_Hab)
+table(diff(predSS.L2_Hab@coords[,1]))
+rSS <- raster(ext=extSS,res=0.000048500000005447)
+# Final raster
+to_asciiSS2 <- rasterize(predSS.L2_Hab, rSS, '2_Cobbles_predicted')
+to_asciiSS3 <- rasterize(predSS.L2_Hab, rSS, '3_Rock_predicted')
+to_asciiSS4 <- rasterize(predSS.L2_Hab, rSS, '4_Pebbles_predicted')
+to_asciiSS5 <- rasterize(predSS.L2_Hab, rSS, '5_Sand_predicted')
+# Write raster to ascii
+writeRaster(to_asciiSS2,'SSL2_2cob.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_asciiSS3,'SSL2_3rock.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_asciiSS4,'SSL2_4peb.asc', format='ascii', overwrite =TRUE)
+writeRaster(to_asciiSS5,'SSL2_5sand.asc', format='ascii', overwrite =TRUE)
+
+
+
+################################################################
+## WRITE OUT.PREDICT files to CSV to use for ROC CALCULATIONS ##
+################################################################
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/ROCtests")
+
+write.csv(out.predict.HBL2_Hab, "6_OutPredict_HB_L2_Hab_5m.csv")
+write.csv(out.predict.TBL2_Hab, "7_OutPredict_TB_L2_Hab_5m.csv")
+write.csv(out.predict.MGL2_Hab, "8_OutPredict_MG_L2_Hab_5m.csv")
+write.csv(out.predict.SSL2_Hab, "9_OutPredict_SS_L2_Hab_5m.csv")
+write.csv(out.predict.L2_Hab, "10_OutPredict_ALL_L2_Hab_5m.csv")
+
+```
+
+
+
+
+
+
+```{r tree classification}
+
+set.seed(387)
+
+##################################
+#### Level 3 - All Habitats ####
+##################################
+
+L3_Hab.tree <- tree(as.factor(L3_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= model, na.action = na.exclude, method = "class")
+
+
+plot(L3_Hab.tree); text(L3_Hab.tree,cex=0.5)
+summary(L3_Hab.tree) 
+
+# Highly correlated variables removed
+# hyp removed as well as curv_plan, curv_prof, east, mean5, mean10, std10, BPI_F_15, range3, BPI_B_100
+# BPI_F_25, range5, std5, std25
+
+# L3_Hab.tree <- tree(as.factor(L3_Hab) ~ curv +	slope +	mean3 +
+  #                     mean25 +	std3  +	range10 +	range25 +
+   #                    rugosity +	north +	BPI_F_10  +
+    #                   BPI_B_50 + BPI_B_250 +	Depth,
+     #                data= model, na.action = na.exclude, method = "class")
+
+# Select the best model variables
+L3_Hab.tree <- tree(as.factor(L3_Hab) ~ range5 + BScatter + mean3 + std25 + mean25 + Depth + BPI_B_250 +
+                       mean10 + BPI_B_50,
+                        data=model, method = "class")
+summary(L3_Hab.tree) # MISCLASSIFICATION RATE 46.08%
+
+
+###########################################
+## Test at each site level individually ##
+###########################################
+
+#################
+## Helby Banks ##
+#################
+
+HBL3_Hab.tree <- tree(as.factor(L3_Hab) ~ Depth + BScatter + curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 + 
+                         mean10 + mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	
+                         range25 + hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	
+                         BPI_F_15 + BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250,
+                     data= HBmodel, na.action = na.exclude, method = "class")
+plot(HBL3_Hab.tree); text(HBL3_Hab.tree,cex=0.5)
+summary(HBL3_Hab.tree)
+
+# Select the best model variables
+HBL3_Hab.tree <- tree(as.factor(L3_Hab) ~ Depth + mean25 + BScatter + BPI_B_250 + mean10 + range5 + range25 +
+                         BPI_B_50,
+                        data=HBmodel, method = "class")
+summary(HBL3_Hab.tree) # MISCLASSIFICATION RATE 36.33%
+
+
+
+################
+## Tantabiddi ##
+################
+
+TBL3_Hab.tree <- tree(as.factor(L3_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= TBmodel, na.action = na.exclude, method = "class")
+
+plot(TBL3_Hab.tree); text(TBL3_Hab.tree,cex=0.5)
+summary(TBL3_Hab.tree)
+
+# Select the best model variables
+TBL3_Hab.tree <- tree(as.factor(L3_Hab) ~ mean3 + BPI_B_100 + range25 + BPI_B_250 + range10 + std10 + std25 +
+                        BScatter + mean10,
+                        data=TBmodel, method = "class")
+
+summary(TBL3_Hab.tree) # MISCLASSIFICATION RATE 21.39%
+
+
+##############
+## Mangrove ##
+##############
+
+MGL3_Hab.tree <- tree(as.factor(L3_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= MGmodel, na.action = na.exclude, method = "class")
+
+plot(MGL3_Hab.tree); text(MGL3_Hab.tree,cex=0.5)
+summary(MGL3_Hab.tree)
+
+# Select the best model variables
+MGL3_Hab.tree <- tree(as.factor(L3_Hab) ~ mean5 + std25 + mean10 + std5 + BPI_B_250 + mean25 + BScatter + hyp10 + 
+                        mean3 + slope + Depth + BPI_F_25,
+                        data=MGmodel, method = "class")
+
+summary(MGL3_Hab.tree) # MISCLASSIFICATION RATE 15.52%
+
+
+
+###################
+## Southern Site ##
+###################
+
+SSL3_Hab.tree <- tree(as.factor(L3_Hab) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= SSmodel, na.action = na.exclude, method = "class")
+
+plot(SSL3_Hab.tree); text(SSL3_Hab.tree,cex=0.5)
+summary(SSL3_Hab.tree)
+
+# Select the best model variables
+SSL3_Hab.tree <- tree(as.factor(L3_Hab) ~ range25 + BPI_B_50 + mean3 + std25 + BPI_B_250 + mean5 + std3 + mean25 + hyp25 +
+                         BScatter,
+                        data=SSmodel, method = "class")
+
+summary(SSL3_Hab.tree) # MISCLASSIFICATION RATE 16.91%
+
+
+
+########################################################
+## Investigating and Pruning the classification trees ##
+########################################################
+
+###############
+## All sites ##
+###############
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        L3_Hab.fit1  <- cv.tree(L3_Hab.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(L3_Hab.fit1)
+        summary(L3_Hab.fit1)
+        png(file = paste('AllSites_L3_Hab_Misclassification',i, '.png', sep = ''),
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(L3_Hab.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        L3_Hab.prune <- prune.misclass(L3_Hab.tree, best = TreeSize) 
+        plot(L3_Hab.prune); text(L3_Hab.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(L3_Hab.prune))
+        png(file = paste('AllSites_L3_Hab_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(L3_Hab.prune); text(L3_Hab.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 46.08% with 10 trees
+L3_Hab.prune <- prune.misclass(L3_Hab.tree, best = 10)         # choose best tree size and add value in!!!
+plot(L3_Hab.prune); text(L3_Hab.prune,cex=0.8)
+
+L3_Hab.predict <- predict(L3_Hab.prune, test, type = c("vector"))
+L3_Hab.predict <- as.data.frame(L3_Hab.predict)
+out.predict.L3_Hab <- as.data.frame(cbind(test$Long, test$Lat, 
+   test$L3_Hab, L3_Hab.predict))
+names(out.predict.L3_Hab) <- c("X", "Y", "L3_Hab.test", "1_CobThickV_predicted",  "2_CobThinV_predicted",  "3_Grav_predicted",
+                               "4_GravSnd_predicted",  "5_Peb_predicted", "6_PebSnd_predicted",  "7_BldrRf_predicted",
+                               "8_CobRf_predicted", "9_ReefH_predicted",  "10_Reef_predicted", "11_ReefThkV_predicted",
+                               "12_ReefThnV_predicted","13_Rho_predicted", "14_RhoGS_predicted",  "15_Sand_predicted",
+                               "16_SndPeb_predicted", "17_SndGrav_predicted")
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'AllSites_L3_Hab_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(L3_Hab.prune); text(L3_Hab.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/All_Sites_L3_Hab_prune.txt")
+L3_Hab.prune 
+sink()
+
+true.type = as.factor(test[,15])
+predicted = predict(L3_Hab.prune, test,type="class")
+table(true.type,predicted)
+
+
+
+###############################################
+#### Test at each site level individually ####
+###############################################
+
+#####################
+#### Helby Banks ####
+#####################
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        HBL3_Hab.fit1  <- cv.tree(HBL3_Hab.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(HBL3_Hab.fit1)
+        summary(HBL3_Hab.fit1)
+        png(file = paste('HB_L3_Hab_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(HBL3_Hab.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 10    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        HBL3_Hab.prune <- prune.misclass(HBL3_Hab.tree, best = TreeSize) 
+        plot(HBL3_Hab.prune); text(HBL3_Hab.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(HBL3_Hab.prune))
+        png(file = paste('HB_L3_Hab_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(HBL3_Hab.prune); text(HBL3_Hab.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 36.33% with 16 trees
+HBL3_Hab.prune <- prune.misclass(HBL3_Hab.tree, best = 16)         # choose best tree size and add value in!!!
+plot(HBL3_Hab.prune); text(HBL3_Hab.prune,cex=0.8)
+
+HBL3_Hab.predict <- predict(HBL3_Hab.prune, HBtest, type = c("vector"))
+HBL3_Hab.predict <- as.data.frame(HBL3_Hab.predict)
+out.predict.HBL3_Hab <- as.data.frame(cbind(HBtest$Long, HBtest$Lat, 
+   HBtest$L3_Hab, HBL3_Hab.predict))
+names(out.predict.HBL3_Hab) <- c("X", "Y", "L3_Hab.test", "1_CobThickV_predicted",  "2_CobThinV_predicted",
+                                 "3_Grav_predicted","4_GravSnd_predicted", "6_PebSnd_predicted",  "7_BldrRf_predicted",
+                               "8_CobRf_predicted", "9_ReefH_predicted",  "10_Reef_predicted", "11_ReefThkV_predicted",
+                               "12_ReefThnV_predicted", "14_RhoGS_predicted",  "15_Sand_predicted",
+                               "16_SndPeb_predicted", "17_SndGrav_predicted")
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'HB_L3_Hab_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(HBL3_Hab.prune); text(HBL3_Hab.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/HB_L3_Hab_prune.txt")
+HBL3_Hab.prune 
+sink()
+
+HBtrue.type = as.factor(HBtest[,15])
+HBpredicted = predict(HBL3_Hab.prune, HBtest,type="class")
+table(HBtrue.type,HBpredicted)
+
+
+####################
+#### Tantabiddi ####
+####################
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        TBL3_Hab.fit1  <- cv.tree(TBL3_Hab.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(TBL3_Hab.fit1)
+        summary(TBL3_Hab.fit1)
+        png(file = paste('TB_L3_Hab_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(TBL3_Hab.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 12    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        TBL3_Hab.prune <- prune.misclass(TBL3_Hab.tree, best = TreeSize) 
+        plot(TBL3_Hab.prune); text(TBL3_Hab.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(TBL3_Hab.prune))
+        png(file = paste('TB_L3_Hab_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(TBL3_Hab.prune); text(TBL3_Hab.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 21.39% with 18 trees
+TBL3_Hab.prune <- prune.misclass(TBL3_Hab.tree, best = 18)         # choose best tree size and add value in!!!
+plot(TBL3_Hab.prune); text(TBL3_Hab.prune,cex=0.8)
+
+TBL3_Hab.predict <- predict(TBL3_Hab.prune, TBtest, type = c("vector"))
+TBL3_Hab.predict <- as.data.frame(TBL3_Hab.predict)
+out.predict.TBL3_Hab <- as.data.frame(cbind(TBtest$Long, TBtest$Lat, 
+   TBtest$L3_Hab, TBL3_Hab.predict))
+names(out.predict.TBL3_Hab) <- c("X", "Y", "L3_Hab.test",  "1_CobThickV_predicted",  "2_CobThinV_predicted",
+                                 "3_Grav_predicted",  "5_Peb_predicted", "6_PebSnd_predicted", "9_ReefH_predicted",
+                                 "10_Reef_predicted", "11_ReefThkV_predicted","12_ReefThnV_predicted", "15_Sand_predicted",
+                               "16_SndPeb_predicted", "17_SndGrav_predicted")
+
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'TB_L3_Hab_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(TBL3_Hab.prune); text(TBL3_Hab.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/TB_L3_Hab_prune.txt")
+TBL3_Hab.prune 
+sink()
+
+TBtrue.type = as.factor(TBtest[,15])
+TBpredicted = predict(TBL3_Hab.prune, TBtest,type="class")
+table(TBtrue.type,TBpredicted)
+
+
+##################
+#### Mangrove ####
+##################
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        MGL3_Hab.fit1  <- cv.tree(MGL3_Hab.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(MGL3_Hab.fit1)
+        summary(MGL3_Hab.fit1)
+        png(file = paste('MG_L3_Hab_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(MGL3_Hab.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 12    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        MGL3_Hab.prune <- prune.misclass(MGL3_Hab.tree, best = TreeSize) 
+        plot(MGL3_Hab.prune); text(MGL3_Hab.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(MGL3_Hab.prune))
+        png(file = paste('MG_L3_Hab_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(MGL3_Hab.prune); text(MGL3_Hab.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 15.52% with 18 trees
+MGL3_Hab.prune <- prune.misclass(MGL3_Hab.tree, best = 18)         # choose best tree size and add value in!!!
+plot(MGL3_Hab.prune); text(MGL3_Hab.prune,cex=0.8)
+
+MGL3_Hab.predict <- predict(MGL3_Hab.prune, MGtest, type = c("vector"))
+MGL3_Hab.predict <- as.data.frame(MGL3_Hab.predict)
+out.predict.MGL3_Hab <- as.data.frame(cbind(MGtest$Long, MGtest$Lat, 
+   MGtest$L3_Hab, MGL3_Hab.predict))
+names(out.predict.MGL3_Hab) <- c("X", "Y", "L3_Hab.test",  "2_CobThinV_predicted", 
+                                 "6_PebSnd_predicted",  "8_CobRf_predicted", "9_ReefH_predicted",  "10_Reef_predicted",
+                                 "11_ReefThkV_predicted","12_ReefThnV_predicted",  "15_Sand_predicted",
+                               "16_SndPeb_predicted", "17_SndGrav_predicted")
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'MG_L3_Hab_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(MGL3_Hab.prune); text(MGL3_Hab.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/MG_L3_Hab_prune.txt")
+MGL3_Hab.prune 
+sink()
+
+MGtrue.type = as.factor(MGtest[,15])
+MGpredicted = predict(MGL3_Hab.prune, MGtest,type="class")
+table(MGtrue.type,MGpredicted)
+
+#######################
+#### Southern Site ####
+######################
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        SSL3_Hab.fit1  <- cv.tree(SSL3_Hab.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(SSL3_Hab.fit1)
+        summary(SSL3_Hab.fit1)
+        png(file = paste('SS_L3_Hab_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(SSL3_Hab.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+
+par(mfrow=c(2,2)) ## makes graphs appear in 2 rows and 2 columns - 4 per page
+
+TreeSize <- 12    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        SSL3_Hab.prune <- prune.misclass(SSL3_Hab.tree, best = TreeSize) 
+        plot(SSL3_Hab.prune); text(SSL3_Hab.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(SSL3_Hab.prune))
+        png(file = paste('SS_L3_Hab_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(SSL3_Hab.prune); text(SSL3_Hab.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 16.91% with 18 trees
+SSL3_Hab.prune <- prune.misclass(SSL3_Hab.tree, best = 18)         # choose best tree size and add value in!!!
+plot(SSL3_Hab.prune); text(SSL3_Hab.prune,cex=0.8)
+
+SSL3_Hab.predict <- predict(SSL3_Hab.prune, SStest, type = c("vector"))
+SSL3_Hab.predict <- as.data.frame(SSL3_Hab.predict)
+out.predict.SSL3_Hab <- as.data.frame(cbind(SStest$Long, SStest$Lat, 
+   SStest$L3_Hab, SSL3_Hab.predict))
+names(out.predict.SSL3_Hab) <- c("X", "Y", "L3_Hab.test",  "8_CobRf_predicted", "9_ReefH_predicted",  "10_Reef_predicted",
+                                 "12_ReefThnV_predicted", "13_Rho_predicted",  "14_RhoGS_predicted",  
+                                 "15_Sand_predicted","16_SndPeb_predicted", "17_SndGrav_predicted")
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'SS_L3_Hab_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(SSL3_Hab.prune); text(SSL3_Hab.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/SS_L3_Hab_prune.txt")
+SSL3_Hab.prune 
+sink()
+
+SStrue.type = as.factor(SStest[,15])
+SSpredicted = predict(SSL3_Hab.prune, SStest,type="class")
+table(SStrue.type,SSpredicted)
+
+
+#####################################################
+## Predict Level 3 CATAMI  Substrate for each site ##
+#####################################################
+
+###################
+## ALL SITES ##
+###################
+
+
+L3_Hab.rs.predict1 <- predict(L3_Hab.prune, points1, type = c("vector"))
+L3_Hab.predict1 <- as.data.frame(L3_Hab.rs.predict1)
+pred.L3_Hab1 <- as.data.frame(cbind(points1$Long, points1$Lat,  L3_Hab.predict1))
+names(pred.L3_Hab1) <- c("X","Y", "1_CobThickV_predicted",  "2_CobThinV_predicted",  "3_Grav_predicted",
+                               "4_GravSnd_predicted",  "5_Peb_predicted", "6_PebSnd_predicted",  "7_BldrRf_predicted",
+                               "8_CobRf_predicted", "9_ReefH_predicted",  "10_Reef_predicted", "11_ReefThkV_predicted",
+                               "12_ReefThnV_predicted","13_Rho_predicted", "14_RhoGS_predicted",  "15_Sand_predicted",
+                               "16_SndPeb_predicted", "17_SndGrav_predicted")
+
+L3_Hab.rs.predict2 <- predict(L3_Hab.prune, points2, type = c("vector"))
+L3_Hab.predict2 <- as.data.frame(L3_Hab.rs.predict2)
+pred.L3_Hab2 <- as.data.frame(cbind(points2$Long, points2$Lat,  L3_Hab.predict2))
+names(pred.L3_Hab2) <- c("X","Y", "1_CobThickV_predicted",  "2_CobThinV_predicted",  "3_Grav_predicted",
+                               "4_GravSnd_predicted",  "5_Peb_predicted", "6_PebSnd_predicted",  "7_BldrRf_predicted",
+                               "8_CobRf_predicted", "9_ReefH_predicted",  "10_Reef_predicted", "11_ReefThkV_predicted",
+                               "12_ReefThnV_predicted","13_Rho_predicted", "14_RhoGS_predicted",  "15_Sand_predicted",
+                               "16_SndPeb_predicted", "17_SndGrav_predicted")
+
+L3_Hab.rs.predict3 <- predict(L3_Hab.prune, points3, type = c("vector"))
+L3_Hab.predict3 <- as.data.frame(L3_Hab.rs.predict3)
+pred.L3_Hab3 <- as.data.frame(cbind(points3$Long, points3$Lat,  L3_Hab.predict3))
+names(pred.L3_Hab3) <- c("X","Y", "1_CobThickV_predicted",  "2_CobThinV_predicted",  "3_Grav_predicted",
+                               "4_GravSnd_predicted",  "5_Peb_predicted", "6_PebSnd_predicted",  "7_BldrRf_predicted",
+                               "8_CobRf_predicted", "9_ReefH_predicted",  "10_Reef_predicted", "11_ReefThkV_predicted",
+                               "12_ReefThnV_predicted","13_Rho_predicted", "14_RhoGS_predicted",  "15_Sand_predicted",
+                               "16_SndPeb_predicted", "17_SndGrav_predicted")
+
+
+
+#########################
+## Helby Banks Predict ##
+#########################
+
+HB.L3_Hab.rs.predict <- predict(HBL3_Hab.prune, HBpoints, type = c("vector"))
+HB.L3_Hab.predict <- as.data.frame(HB.L3_Hab.rs.predict)
+predHB.L3_Hab <- as.data.frame(cbind(HBpoints$Long, HBpoints$Lat,  HB.L3_Hab.predict))
+names(predHB.L3_Hab) <- c("X","Y", "1_CobThickV_predicted",  "2_CobThinV_predicted",
+                                 "3_Grav_predicted","4_GravSnd_predicted", "6_PebSnd_predicted",  "7_BldrRf_predicted",
+                               "8_CobRf_predicted", "9_ReefH_predicted",  "10_Reef_predicted", "11_ReefThkV_predicted",
+                               "12_ReefThnV_predicted", "14_RhoGS_predicted",  "15_Sand_predicted",
+                               "16_SndPeb_predicted", "17_SndGrav_predicted")
+
+
+#######################
+## Tantabiddi Predict ##
+#######################
+
+TB.L3_Hab.rs.predict <- predict(TBL3_Hab.prune, TBpoints, type = c("vector"))
+TB.L3_Hab.predict <- as.data.frame(TB.L3_Hab.rs.predict)
+predTB.L3_Hab <- as.data.frame(cbind(TBpoints$Long, TBpoints$Lat,  TB.L3_Hab.predict))
+names(predTB.L3_Hab) <- c("X", "Y", "1_CobThickV_predicted",  "2_CobThinV_predicted",
+                                 "3_Grav_predicted",  "5_Peb_predicted", "6_PebSnd_predicted", "9_ReefH_predicted",
+                                 "10_Reef_predicted", "11_ReefThkV_predicted","12_ReefThnV_predicted", "15_Sand_predicted",
+                               "16_SndPeb_predicted", "17_SndGrav_predicted")
+
+#######################
+## Mangrove Predict ##
+######################
+
+MG.L3_Hab.rs.predict <- predict(MGL3_Hab.prune, MGpoints, type = c("vector"))
+MG.L3_Hab.predict <- as.data.frame(MG.L3_Hab.rs.predict)
+predMG.L3_Hab <- as.data.frame(cbind(MGpoints$Lat, MGpoints$Long, MG.L3_Hab.predict))
+names(predMG.L3_Hab) <- c("Y", "X", "2_CobThinV_predicted", 
+                                 "6_PebSnd_predicted",  "8_CobRf_predicted", "9_ReefH_predicted",  "10_Reef_predicted",
+                                 "11_ReefThkV_predicted","12_ReefThnV_predicted",  "15_Sand_predicted",
+                               "16_SndPeb_predicted", "17_SndGrav_predicted")
+
+###########################
+## Southern Site Predict ##
+###########################
+
+SS.L3_Hab.rs.predict <- predict(SSL3_Hab.prune, SSpoints, type = c("vector"))
+SS.L3_Hab.predict <- as.data.frame(SS.L3_Hab.rs.predict)
+predSS.L3_Hab <- as.data.frame(cbind(SSpoints$Lat, SSpoints$Long, SS.L3_Hab.predict))
+names(predSS.L3_Hab) <- c("Y", "X", "8_CobRf_predicted", "9_ReefH_predicted",  "10_Reef_predicted",
+                                 "12_ReefThnV_predicted", "13_Rho_predicted",  "14_RhoGS_predicted",  
+                                 "15_Sand_predicted","16_SndPeb_predicted", "17_SndGrav_predicted")
+
+
+#########################
+## Export to ASCII ##
+#########################
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Lv3Outputs")
+
+###############
+## All Sites ##
+###############
+
+coordinates(pred.L3_Hab1) <- ~X+Y
+ext <- extent(pred.L3_Hab1)
+r <- raster(ext=ext,res=0.0000483000000031097)
+to_ascii_1 <- rasterize(pred.L3_Hab1, r, '1_CobThickV_predicted')
+to_ascii_2 <- rasterize(pred.L3_Hab1, r, '2_CobThinV_predicted')
+to_ascii_3 <- rasterize(pred.L3_Hab1, r, '3_Grav_predicted')
+to_ascii_4 <- rasterize(pred.L3_Hab1, r, '4_GravSnd_predicted')
+to_ascii_5 <- rasterize(pred.L3_Hab1, r, '5_Peb_predicted')
+to_ascii_6 <- rasterize(pred.L3_Hab1, r, '6_PebSnd_predicted')
+to_ascii_7 <- rasterize(pred.L3_Hab1, r, '7_BldrRf_predicted')
+to_ascii_8 <- rasterize(pred.L3_Hab1, r, '8_CobRf_predicted')
+to_ascii_9 <- rasterize(pred.L3_Hab1, r, '9_ReefH_predicted')
+to_ascii_10 <- rasterize(pred.L3_Hab1, r, '10_Reef_predicted')
+to_ascii_11 <- rasterize(pred.L3_Hab1, r, '11_ReefThkV_predicted')
+to_ascii_12 <- rasterize(pred.L3_Hab1, r, '12_ReefThnV_predicted')
+to_ascii_13 <- rasterize(pred.L3_Hab1, r, '13_Rho_predicted')
+to_ascii_14 <- rasterize(pred.L3_Hab1, r, '14_RhoGS_predicted')
+to_ascii_15 <- rasterize(pred.L3_Hab1, r, '15_Sand_predicted')
+to_ascii_16 <- rasterize(pred.L3_Hab1, r, '16_SndPeb_predicted')
+to_ascii_17 <- rasterize(pred.L3_Hab1, r, '17_SndGrav_predicted')
+
+writeRaster(to_ascii_1,'L3_1CbTkV.asc', format='ascii')
+writeRaster(to_ascii_2,'L3_2CbTnV.asc', format='ascii')
+writeRaster(to_ascii_3,'L3_3Grv.asc', format='ascii')
+writeRaster(to_ascii_4,'L3_4GvSnd.asc', format='ascii')
+writeRaster(to_ascii_5,'L3_5Peb.asc', format='ascii')
+writeRaster(to_ascii_6,'L3_6PbSnd.asc', format='ascii')
+writeRaster(to_ascii_7,'L3_7Bldr.asc', format='ascii')
+writeRaster(to_ascii_8,'L3_8Cob.asc', format='ascii')
+writeRaster(to_ascii_9,'L3_9ReefH.asc', format='ascii')
+writeRaster(to_ascii_10,'L3_10ReefL.asc', format='ascii')
+writeRaster(to_ascii_11,'L3_11RfTkV.asc', format='ascii')
+writeRaster(to_ascii_12,'L3_12RfTnV.asc', format='ascii')
+writeRaster(to_ascii_13,'L3_13Rho.asc', format='ascii')
+writeRaster(to_ascii_14,'L3_14RhoGS.asc', format='ascii')
+writeRaster(to_ascii_15,'L3_15Sand.asc', format='ascii')
+writeRaster(to_ascii_16,'L3_16SndPb.asc', format='ascii')
+writeRaster(to_ascii_17,'L3_17SndGr.asc', format='ascii')
+
+
+coordinates(pred.L3_Hab2) <- ~X+Y
+ext2 <- extent(pred.L3_Hab2)
+r2 <- raster(ext=ext2,res=0.0000483000000031097)
+to_ascii2_1 <- rasterize(pred.L3_Hab2, r2, '1_CobThickV_predicted')
+to_ascii2_2 <- rasterize(pred.L3_Hab2, r2, '2_CobThinV_predicted')
+to_ascii2_3 <- rasterize(pred.L3_Hab2, r2, '3_Grav_predicted')
+to_ascii2_4 <- rasterize(pred.L3_Hab2, r2, '4_GravSnd_predicted')
+to_ascii2_5 <- rasterize(pred.L3_Hab2, r2, '5_Peb_predicted')
+to_ascii2_6 <- rasterize(pred.L3_Hab2, r2, '6_PebSnd_predicted')
+to_ascii2_7 <- rasterize(pred.L3_Hab2, r2, '7_BldrRf_predicted')
+to_ascii2_8 <- rasterize(pred.L3_Hab2, r2, '8_CobRf_predicted')
+to_ascii2_9 <- rasterize(pred.L3_Hab2, r2, '9_ReefH_predicted')
+to_ascii2_10 <- rasterize(pred.L3_Hab2, r2, '10_Reef_predicted')
+to_ascii2_11 <- rasterize(pred.L3_Hab2, r2, '11_ReefThkV_predicted')
+to_ascii2_12 <- rasterize(pred.L3_Hab2, r2, '12_ReefThnV_predicted')
+to_ascii2_13 <- rasterize(pred.L3_Hab2, r2, '13_Rho_predicted')
+to_ascii2_14 <- rasterize(pred.L3_Hab2, r2, '14_RhoGS_predicted')
+to_ascii2_15 <- rasterize(pred.L3_Hab2, r2, '15_Sand_predicted')
+to_ascii2_16 <- rasterize(pred.L3_Hab2, r2, '16_SndPeb_predicted')
+to_ascii2_17 <- rasterize(pred.L3_Hab2, r2, '17_SndGrav_predicted')
+
+writeRaster(to_ascii2_1,'L3_1CbTkV2.asc', format='ascii')
+writeRaster(to_ascii2_2,'L3_2CbTnV2.asc', format='ascii')
+writeRaster(to_ascii2_3,'L3_3Grv2.asc', format='ascii')
+writeRaster(to_ascii2_4,'L3_4GvSnd2.asc', format='ascii')
+writeRaster(to_ascii2_5,'L3_5Peb2.asc', format='ascii')
+writeRaster(to_ascii2_6,'L3_6PbSnd2.asc', format='ascii')
+writeRaster(to_ascii2_7,'L3_7Bldr2.asc', format='ascii')
+writeRaster(to_ascii2_8,'L3_8Cob2.asc', format='ascii')
+writeRaster(to_ascii2_9,'L3_9ReefH2.asc', format='ascii')
+writeRaster(to_ascii2_10,'L3_10ReefL2.asc', format='ascii')
+writeRaster(to_ascii2_11,'L3_11RfTkV2.asc', format='ascii')
+writeRaster(to_ascii2_12,'L3_12RfTnV2.asc', format='ascii')
+writeRaster(to_ascii2_13,'L2_13Rho2.asc', format='ascii')
+writeRaster(to_ascii2_14,'L3_14RhoGS2.asc', format='ascii')
+writeRaster(to_ascii2_15,'L3_15Sand2.asc', format='ascii')
+writeRaster(to_ascii2_16,'L3_16SndPb2.asc', format='ascii')
+writeRaster(to_ascii2_17,'L3_17SndGr2.asc', format='ascii')
+
+
+
+coordinates(pred.L3_Hab3) <- ~X+Y
+ext3 <- extent(pred.L3_Hab3)
+r3 <- raster(ext=ext3,res=0.0000483000000031097)
+to_ascii3_1 <- rasterize(pred.L3_Hab3, r3, '1_CobThickV_predicted')
+to_ascii3_2 <- rasterize(pred.L3_Hab3, r3, '2_CobThinV_predicted')
+to_ascii3_3 <- rasterize(pred.L3_Hab3, r3, '3_Grav_predicted')
+to_ascii3_4 <- rasterize(pred.L3_Hab3, r3, '4_GravSnd_predicted')
+to_ascii3_5 <- rasterize(pred.L3_Hab3, r3, '5_Peb_predicted')
+to_ascii3_6 <- rasterize(pred.L3_Hab3, r3, '6_PebSnd_predicted')
+to_ascii3_7 <- rasterize(pred.L3_Hab3, r3, '7_BldrRf_predicted')
+to_ascii3_8 <- rasterize(pred.L3_Hab3, r3, '8_CobRf_predicted')
+to_ascii3_9 <- rasterize(pred.L3_Hab3, r3, '9_ReefH_predicted')
+to_ascii3_10 <- rasterize(pred.L3_Hab3, r3, '10_Reef_predicted')
+to_ascii3_11 <- rasterize(pred.L3_Hab3, r3, '11_ReefThkV_predicted')
+to_ascii3_12 <- rasterize(pred.L3_Hab3, r3, '12_ReefThnV_predicted')
+to_ascii3_13 <- rasterize(pred.L3_Hab3, r3, '13_Rho_predicted')
+to_ascii3_14 <- rasterize(pred.L3_Hab3, r3, '14_RhoGS_predicted')
+to_ascii3_15 <- rasterize(pred.L3_Hab3, r3, '15_Sand_predicted')
+to_ascii3_16 <- rasterize(pred.L3_Hab3, r3, '16_SndPeb_predicted')
+to_ascii3_17 <- rasterize(pred.L3_Hab3, r3, '17_SndGrav_predicted')
+
+writeRaster(to_ascii3_1,'L3_1CbTkV3.asc', format='ascii')
+writeRaster(to_ascii3_2,'L3_2CbTnV3.asc', format='ascii')
+writeRaster(to_ascii3_3,'L3_3Grv3.asc', format='ascii')
+writeRaster(to_ascii3_4,'L3_4GvSnd3.asc', format='ascii')
+writeRaster(to_ascii3_5,'L3_5Peb3.asc', format='ascii')
+writeRaster(to_ascii3_6,'L3_6PbSnd3.asc', format='ascii')
+writeRaster(to_ascii3_7,'L3_7Bldr3.asc', format='ascii')
+writeRaster(to_ascii3_8,'L3_8Cob3.asc', format='ascii')
+writeRaster(to_ascii3_9,'L3_9ReefH3.asc', format='ascii')
+writeRaster(to_ascii3_10,'L3_10ReefL3.asc', format='ascii')
+writeRaster(to_ascii3_11,'L3_11RfTkV3.asc', format='ascii')
+writeRaster(to_ascii3_12,'L3_12RfTnV3.asc', format='ascii')
+writeRaster(to_ascii3_13,'L3_13Rho3.asc', format='ascii')
+writeRaster(to_ascii3_14,'L3_14RhoGS3.asc', format='ascii')
+writeRaster(to_ascii3_15,'L3_15Sand3.asc', format='ascii')
+writeRaster(to_ascii3_16,'L3_16SndPb3.asc', format='ascii')
+writeRaster(to_ascii3_17,'L3_17SndGr3.asc', format='ascii')
+
+
+
+
+#################
+## Helby Banks ##
+#################
+
+coordinates(predHB.L3_Hab) <- ~X+Y
+extHB <- extent(predHB.L3_Hab)
+table(diff(predHB.L3_Hab@coords[,1]))
+rHB <- raster(ext=extHB,res=0.0000483000000031097)
+# Final raster
+to_asciiHB_1 <- rasterize(predHB.L3_Hab, rHB, '1_CobThickV_predicted')
+to_asciiHB_2 <- rasterize(predHB.L3_Hab, rHB, '2_CobThinV_predicted')
+to_asciiHB_3 <- rasterize(predHB.L3_Hab, rHB, '3_Grav_predicted')
+to_asciiHB_4 <- rasterize(predHB.L3_Hab, rHB, '4_GravSnd_predicted')
+to_asciiHB_6 <- rasterize(predHB.L3_Hab, rHB, '6_PebSnd_predicted')
+to_asciiHB_7 <- rasterize(predHB.L3_Hab, rHB, '7_BldrRf_predicted')
+to_asciiHB_8 <- rasterize(predHB.L3_Hab, rHB, '8_CobRf_predicted')
+to_asciiHB_9 <- rasterize(predHB.L3_Hab, rHB, '9_ReefH_predicted')
+to_asciiHB_10 <- rasterize(predHB.L3_Hab, rHB, '10_Reef_predicted')
+to_asciiHB_11 <- rasterize(predHB.L3_Hab, rHB, '11_ReefThkV_predicted')
+to_asciiHB_12 <- rasterize(predHB.L3_Hab, rHB, '12_ReefThnV_predicted')
+to_asciiHB_14 <- rasterize(predHB.L3_Hab, rHB, '14_RhoGS_predicted')
+to_asciiHB_15 <- rasterize(predHB.L3_Hab, rHB, '15_Sand_predicted')
+to_asciiHB_16 <- rasterize(predHB.L3_Hab, rHB, '16_SndPeb_predicted')
+to_asciiHB_17 <- rasterize(predHB.L3_Hab, rHB, '17_SndGrav_predicted')
+
+writeRaster(to_asciiHB_1,'HBL3_1CbTkV.asc', format='ascii')
+writeRaster(to_asciiHB_2,'HBL3_2CbTnV.asc', format='ascii')
+writeRaster(to_asciiHB_3,'HBL3_3Grv.asc', format='ascii')
+writeRaster(to_asciiHB_4,'HBL3_4GvSnd.asc', format='ascii')
+writeRaster(to_asciiHB_6,'HBL3_6PbSnd.asc', format='ascii')
+writeRaster(to_asciiHB_7,'HBL3_7Bldr.asc', format='ascii')
+writeRaster(to_asciiHB_8,'HBL3_8Cob.asc', format='ascii')
+writeRaster(to_asciiHB_9,'HBL3_9ReefH.asc', format='ascii')
+writeRaster(to_asciiHB_10,'HBL3_10ReefL.asc', format='ascii')
+writeRaster(to_asciiHB_11,'HBL3_11RfTkV.asc', format='ascii')
+writeRaster(to_asciiHB_12,'HBL3_12RfTnV.asc', format='ascii')
+writeRaster(to_asciiHB_14,'HBL3_14RhoGS.asc', format='ascii')
+writeRaster(to_asciiHB_15,'HBL3_15Sand.asc', format='ascii')
+writeRaster(to_asciiHB_16,'HBL3_16SndPb.asc', format='ascii')
+writeRaster(to_asciiHB_17,'HBL3_17SndGr.asc', format='ascii')
+
+
+################
+## Tantabiddi ##
+################
+
+coordinates(predTB.L3_Hab) <- ~X+Y
+extTB <- extent(predTB.L3_Hab)
+table(diff(predTB.L3_Hab@coords[,1]))
+rTB <- raster(ext=extTB,res=0.0000483000000031097)
+# Final raster
+to_asciiTB_1 <- rasterize(predTB.L3_Hab, rTB, '1_CobThickV_predicted')
+to_asciiTB_2 <- rasterize(predTB.L3_Hab, rTB, '2_CobThinV_predicted')
+to_asciiTB_3 <- rasterize(predTB.L3_Hab, rTB, '3_Grav_predicted')
+to_asciiTB_5 <- rasterize(predTB.L3_Hab, rTB, '5_Peb_predicted')
+to_asciiTB_6 <- rasterize(predTB.L3_Hab, rTB, '6_PebSnd_predicted')
+to_asciiTB_9 <- rasterize(predTB.L3_Hab, rTB, '9_ReefH_predicted')
+to_asciiTB_10 <- rasterize(predTB.L3_Hab, rTB, '10_Reef_predicted')
+to_asciiTB_11 <- rasterize(predTB.L3_Hab, rTB, '11_ReefThkV_predicted')
+to_asciiTB_12 <- rasterize(predTB.L3_Hab, rTB, '12_ReefThnV_predicted')
+to_asciiTB_15 <- rasterize(predTB.L3_Hab, rTB, '15_Sand_predicted')
+to_asciiTB_16 <- rasterize(predTB.L3_Hab, rTB, '16_SndPeb_predicted')
+to_asciiTB_17 <- rasterize(predTB.L3_Hab, rTB, '17_SndGrav_predicted')
+
+writeRaster(to_asciiTB_1,'TBL3_1CbTkV.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_2,'TBL3_2CbTnV.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_3,'TBL3_3Grv.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_5,'TBL3_5Peb3.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_6,'TBL3_6PbSnd.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_9,'TBL3_9ReefH.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_10,'TBL3_10ReefL.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_11,'TBL3_11RfTkV.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_12,'TBL3_12RfTnV.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_15,'TBL3_15Sand.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_16,'TBL3_16SndPb.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_17,'TBL3_17SndGr.asc', format='ascii', overwrite = TRUE)
+
+
+##############
+## Mangrove ##
+##############
+
+coordinates(predMG.L3_Hab) <- ~X+Y
+extMG <- extent(predMG.L3_Hab)
+table(diff(predMG.L3_Hab@coords[,1]))
+rMG <- raster(ext=extMG,res=0.0000483000000031097)
+# Final raster
+to_asciiMG_2 <- rasterize(predMG.L3_Hab, rMG, '2_CobThinV_predicted')
+to_asciiMG_6 <- rasterize(predMG.L3_Hab, rMG, '6_PebSnd_predicted')
+to_asciiMG_8 <- rasterize(predMG.L3_Hab, rMG, '8_CobRf_predicted')
+to_asciiMG_9 <- rasterize(predMG.L3_Hab, rMG, '9_ReefH_predicted')
+to_asciiMG_10 <- rasterize(predMG.L3_Hab, rMG, '10_Reef_predicted')
+to_asciiMG_11 <- rasterize(predMG.L3_Hab, rMG, '11_ReefThkV_predicted')
+to_asciiMG_12 <- rasterize(predMG.L3_Hab, rMG, '12_ReefThnV_predicted')
+to_asciiMG_15 <- rasterize(predMG.L3_Hab, rMG, '15_Sand_predicted')
+to_asciiMG_16 <- rasterize(predMG.L3_Hab, rMG, '16_SndPeb_predicted')
+to_asciiMG_17 <- rasterize(predMG.L3_Hab, rMG, '17_SndGrav_predicted')
+
+writeRaster(to_asciiMG_2,'MGL3_2CbTnV.asc', format='ascii')
+writeRaster(to_asciiMG_6,'MGL3_6PbSnd.asc', format='ascii')
+writeRaster(to_asciiMG_8,'MGL3_8Cob.asc', format='ascii')
+writeRaster(to_asciiMG_9,'MGL3_9ReefH.asc', format='ascii')
+writeRaster(to_asciiMG_10,'MGL3_10ReefL.asc', format='ascii')
+writeRaster(to_asciiMG_11,'MGL3_11RfTkV.asc', format='ascii')
+writeRaster(to_asciiMG_12,'MGL3_12RfTnV.asc', format='ascii')
+writeRaster(to_asciiMG_15,'MGL3_15Sand.asc', format='ascii')
+writeRaster(to_asciiMG_16,'MGL3_16SndPb.asc', format='ascii')
+writeRaster(to_asciiMG_17,'MGL3_17SndGr.asc', format='ascii')
+
+
+
+coordinates(predSS.L3_Hab) <- ~X+Y
+extSS <- extent(predSS.L3_Hab)
+table(diff(predSS.L3_Hab@coords[,1]))
+rSS <- raster(ext=extSS,res=0.000048500000005447)
+# Final raster
+to_asciiSS_8 <- rasterize(predSS.L3_Hab, rSS, '8_CobRf_predicted')
+to_asciiSS_9 <- rasterize(predSS.L3_Hab, rSS, '9_ReefH_predicted')
+to_asciiSS_10 <- rasterize(predSS.L3_Hab, rSS, '10_Reef_predicted')
+to_asciiSS_12 <- rasterize(predSS.L3_Hab, rSS, '12_ReefThnV_predicted')
+to_asciiSS_13 <- rasterize(predSS.L3_Hab, rSS, '13_Rho_predicted')
+to_asciiSS_14 <- rasterize(predSS.L3_Hab, rSS, '14_RhoGS_predicted')
+to_asciiSS_15 <- rasterize(predSS.L3_Hab, rSS, '15_Sand_predicted')
+to_asciiSS_16 <- rasterize(predSS.L3_Hab, rSS, '16_SndPeb_predicted')
+to_asciiSS_17 <- rasterize(predSS.L3_Hab, rSS, '17_SndGrav_predicted')
+
+
+writeRaster(to_asciiSS_8,'SSL3_8Cob.asc', format='ascii')
+writeRaster(to_asciiSS_9,'SSL3_9ReefH.asc', format='ascii')
+writeRaster(to_asciiSS_10,'SSL3_10ReefL.asc', format='ascii')
+writeRaster(to_asciiSS_12,'SSL3_12RfTnV.asc', format='ascii')
+writeRaster(to_asciiSS_13,'SSL3_13Rho.asc', format='ascii')
+writeRaster(to_asciiSS_14,'SSL3_14RhoGS.asc', format='ascii')
+writeRaster(to_asciiSS_15,'SSL3_15Sand.asc', format='ascii')
+writeRaster(to_asciiSS_16,'SSL3_16SndPb.asc', format='ascii')
+writeRaster(to_asciiSS_17,'SSL3_17SndGr.asc', format='ascii')
+
+
+################################################################
+## WRITE OUT.PREDICT files to CSV to use for ROC CALCULATIONS ##
+################################################################
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/ROCtests")
+
+write.csv(out.predict.HBL3_Hab, "11_OutPredict_HB_L3_Hab_5m.csv")
+write.csv(out.predict.TBL3_Hab, "12_OutPredict_TB_L3_Hab_5m.csv")
+write.csv(out.predict.MGL3_Hab, "13_OutPredict_MG_L3_Hab_5m.csv")
+write.csv(out.predict.SSL3_Hab, "14_OutPredict_SS_L3_Hab_5m.csv")
+write.csv(out.predict.L3_Hab, "15_OutPredict_All_L3_Hab_5m.csv")
+
+```
+
+
+
+
+
+```{r}
+
+#####################################
+#### Level 3 EDIT - All Habitats ####
+#####################################
+
+L3_Hab_EDIT.tree <- tree(as.factor(L3_Hab_EDIT) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= model, na.action = na.exclude, method = "class")
+
+
+plot(L3_Hab_EDIT.tree); text(L3_Hab_EDIT.tree,cex=0.5)
+summary(L3_Hab_EDIT.tree) 
+
+# Highly correlated variables removed
+# hyp removed as well as curv_plan, curv_prof, east, mean5, mean10, std10, BPI_F_15, range3, BPI_B_100
+# BPI_F_25, range5, std5, std25
+
+# L3_Hab_EDIT.tree <- tree(as.factor(L3_Hab_EDIT) ~ curv +	slope +	mean3 +
+  #                     mean25 +	std3  +	range10 +	range25 +
+   #                    rugosity +	north +	BPI_F_10  +
+    #                   BPI_B_50 + BPI_B_250 +	Depth,
+     #                data= model, na.action = na.exclude, method = "class")
+
+# Select the best model variables
+L3_Hab_EDIT.tree <- tree(as.factor(L3_Hab_EDIT) ~ range5 + BScatter + mean3 + std25 + mean25 + Depth + range25 + BPI_B_250 +
+                       mean10 + BPI_B_50,
+                        data=model, method = "class")
+summary(L3_Hab_EDIT.tree) # MISCLASSIFICATION RATE 44.82%
+
+
+###########################################
+## Test at each site level individually ##
+###########################################
+
+#################
+## Helby Banks ##
+#################
+
+HBL3_Hab_EDIT.tree <- tree(as.factor(L3_Hab_EDIT) ~ Depth + BScatter + curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 + 
+                         mean10 + mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	
+                         range25 + hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	
+                         BPI_F_15 + BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250,
+                     data= HBmodel, na.action = na.exclude, method = "class")
+plot(HBL3_Hab_EDIT.tree); text(HBL3_Hab_EDIT.tree,cex=0.5)
+summary(HBL3_Hab_EDIT.tree)
+
+# Select the best model variables
+HBL3_Hab_EDIT.tree <- tree(as.factor(L3_Hab_EDIT) ~ mean10 + mean25 + Depth + BPI_B_250 + range5 + range25 +
+                         mean5 + std25 + BPI_B_100 + BPI_F_25 + std10,
+                        data=HBmodel, method = "class")
+summary(HBL3_Hab_EDIT.tree) # MISCLASSIFICATION RATE 33.32%
+
+
+
+################
+## Tantabiddi ##
+################
+
+TBL3_Hab_EDIT.tree <- tree(as.factor(L3_Hab_EDIT) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= TBmodel, na.action = na.exclude, method = "class")
+
+plot(TBL3_Hab_EDIT.tree); text(TBL3_Hab_EDIT.tree,cex=0.5)
+summary(TBL3_Hab_EDIT.tree)
+
+# Select the best model variables
+TBL3_Hab_EDIT.tree <- tree(as.factor(L3_Hab_EDIT) ~ mean3 + BPI_B_100 + range25 + BPI_B_250 + range10 + std10 + std25 +
+                        BScatter + mean10 + mean25,
+                        data=TBmodel, method = "class")
+
+summary(TBL3_Hab_EDIT.tree) # MISCLASSIFICATION RATE 21.22%
+
+
+##############
+## Mangrove ##
+##############
+
+MGL3_Hab_EDIT.tree <- tree(as.factor(L3_Hab_EDIT) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= MGmodel, na.action = na.exclude, method = "class")
+
+plot(MGL3_Hab_EDIT.tree); text(MGL3_Hab_EDIT.tree,cex=0.5)
+summary(MGL3_Hab_EDIT.tree)
+
+# Select the best model variables
+MGL3_Hab_EDIT.tree <- tree(as.factor(L3_Hab_EDIT) ~ mean5 + std25 + std5 + BPI_B_250 + mean25 + hyp25 + 
+                        BPI_F_25 + std10 + rugosity + BPI_B_100,
+                        data=MGmodel, method = "class")
+
+summary(MGL3_Hab_EDIT.tree) # MISCLASSIFICATION RATE 11.06%
+
+
+
+###################
+## Southern Site ##
+###################
+
+SSL3_Hab_EDIT.tree <- tree(as.factor(L3_Hab_EDIT) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= SSmodel, na.action = na.exclude, method = "class")
+
+plot(SSL3_Hab_EDIT.tree); text(SSL3_Hab_EDIT.tree,cex=0.5)
+summary(SSL3_Hab_EDIT.tree)
+
+# Select the best model variables
+SSL3_Hab_EDIT.tree <- tree(as.factor(L3_Hab_EDIT) ~ range25 + BPI_B_50 + mean3 + std25 + BPI_B_250 + mean5 + std3 + mean25 + 
+                        hyp25 + BScatter,
+                        data=SSmodel, method = "class")
+
+summary(SSL3_Hab_EDIT.tree) # MISCLASSIFICATION RATE 16.91%
+
+
+
+########################################################
+## Investigating and Pruning the classification trees ##
+########################################################
+
+###############
+## All sites ##
+###############
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        L3_Hab_EDIT.fit1  <- cv.tree(L3_Hab_EDIT.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(L3_Hab_EDIT.fit1)
+        summary(L3_Hab_EDIT.fit1)
+        png(file = paste('AllSites_L3_Hab_EDIT_Misclassification',i, '.png', sep = ''),
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(L3_Hab_EDIT.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        L3_Hab_EDIT.prune <- prune.misclass(L3_Hab_EDIT.tree, best = TreeSize) 
+        plot(L3_Hab_EDIT.prune); text(L3_Hab_EDIT.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(L3_Hab_EDIT.prune))
+        png(file = paste('AllSites_L3_Hab_EDIT_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(L3_Hab_EDIT.prune); text(L3_Hab_EDIT.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 44.82% with 11 trees
+L3_Hab_EDIT.prune <- prune.misclass(L3_Hab_EDIT.tree, best = 11)         # choose best tree size and add value in!!!
+plot(L3_Hab_EDIT.prune); text(L3_Hab_EDIT.prune,cex=0.8)
+
+L3_Hab_EDIT.predict <- predict(L3_Hab_EDIT.prune, test, type = c("vector"))
+L3_Hab_EDIT.predict <- as.data.frame(L3_Hab_EDIT.predict)
+out.predict.L3_Hab_EDIT <- as.data.frame(cbind(test$Long, test$Lat, 
+   test$L3_Hab_EDIT, L3_Hab_EDIT.predict))
+names(out.predict.L3_Hab_EDIT) <- c("X", "Y", "L3_Hab_EDIT.test", "1_CobVen_predicted",  "3_Grav_predicted",
+                               "4_GravSnd_predicted",  "5_Peb_predicted", "6_PebSnd_predicted",
+                               "8_CobRf_predicted", "9_ReefH_predicted",  "10_Reef_predicted", "11_ReefVen_predicted",
+                               "13_Rho_predicted", "14_RhoGS_predicted",  "15_Sand_predicted")
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'AllSites_L3_Hab_EDIT_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(L3_Hab_EDIT.prune); text(L3_Hab_EDIT.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/All_Sites_L3_Hab_EDIT_prune.txt")
+L3_Hab_EDIT.prune 
+sink()
+
+true.type = as.factor(test[,16])
+predicted = predict(L3_Hab_EDIT.prune, test,type="class")
+table(true.type,predicted)
+
+
+
+###############################################
+#### Test at each site level individually ####
+###############################################
+
+#####################
+#### Helby Banks ####
+#####################
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        HBL3_Hab_EDIT.fit1  <- cv.tree(HBL3_Hab_EDIT.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(HBL3_Hab_EDIT.fit1)
+        summary(HBL3_Hab_EDIT.fit1)
+        png(file = paste('HB_L3_Hab_EDIT_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(HBL3_Hab_EDIT.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 8    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        HBL3_Hab_EDIT.prune <- prune.misclass(HBL3_Hab_EDIT.tree, best = TreeSize) 
+        plot(HBL3_Hab_EDIT.prune); text(HBL3_Hab_EDIT.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(HBL3_Hab_EDIT.prune))
+        png(file = paste('HB_L3_Hab_EDIT_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(HBL3_Hab_EDIT.prune); text(HBL3_Hab_EDIT.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 33.32% with 14 trees
+HBL3_Hab_EDIT.prune <- prune.misclass(HBL3_Hab_EDIT.tree, best = 14)         # choose best tree size and add value in!!!
+plot(HBL3_Hab_EDIT.prune); text(HBL3_Hab_EDIT.prune,cex=0.8)
+
+HBL3_Hab_EDIT.predict <- predict(HBL3_Hab_EDIT.prune, HBtest, type = c("vector"))
+HBL3_Hab_EDIT.predict <- as.data.frame(HBL3_Hab_EDIT.predict)
+out.predict.HBL3_Hab_EDIT <- as.data.frame(cbind(HBtest$Long, HBtest$Lat, 
+   HBtest$L3_Hab_EDIT, HBL3_Hab_EDIT.predict))
+names(out.predict.HBL3_Hab_EDIT) <- c("X", "Y", "L3_Hab_EDIT.test", "1_CobVen_predicted",
+                                 "3_Grav_predicted","4_GravSnd_predicted", "6_PebSnd_predicted",
+                               "8_CobRf_predicted", "9_ReefH_predicted",  "10_Reef_predicted", "11_ReefVen_predicted",
+                               "14_RhoGS_predicted",  "15_Sand_predicted")
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'HB_L3_Hab_EDIT_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(HBL3_Hab_EDIT.prune); text(HBL3_Hab_EDIT.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/HB_L3_Hab_EDIT_prune.txt")
+HBL3_Hab_EDIT.prune 
+sink()
+
+HBtrue.type = as.factor(HBtest[,16])
+HBpredicted = predict(HBL3_Hab_EDIT.prune, HBtest,type="class")
+table(HBtrue.type,HBpredicted)
+
+
+####################
+#### Tantabiddi ####
+####################
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        TBL3_Hab_EDIT.fit1  <- cv.tree(TBL3_Hab_EDIT.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(TBL3_Hab_EDIT.fit1)
+        summary(TBL3_Hab_EDIT.fit1)
+        png(file = paste('TB_L3_Hab_EDIT_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(TBL3_Hab_EDIT.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 10    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        TBL3_Hab_EDIT.prune <- prune.misclass(TBL3_Hab_EDIT.tree, best = TreeSize) 
+        plot(TBL3_Hab_EDIT.prune); text(TBL3_Hab_EDIT.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(TBL3_Hab_EDIT.prune))
+        png(file = paste('TB_L3_Hab_EDIT_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(TBL3_Hab_EDIT.prune); text(TBL3_Hab_EDIT.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 21.83% with 16 trees
+TBL3_Hab_EDIT.prune <- prune.misclass(TBL3_Hab_EDIT.tree, best = 16)         # choose best tree size and add value in!!!
+plot(TBL3_Hab_EDIT.prune); text(TBL3_Hab_EDIT.prune,cex=0.8)
+
+TBL3_Hab_EDIT.predict <- predict(TBL3_Hab_EDIT.prune, TBtest, type = c("vector"))
+TBL3_Hab_EDIT.predict <- as.data.frame(TBL3_Hab_EDIT.predict)
+out.predict.TBL3_Hab_EDIT <- as.data.frame(cbind(TBtest$Long, TBtest$Lat, 
+   TBtest$L3_Hab_EDIT, TBL3_Hab_EDIT.predict))
+names(out.predict.TBL3_Hab_EDIT) <- c("X", "Y", "L3_Hab_EDIT.test",  "1_CobVen_predicted",
+                                 "3_Grav_predicted",  "5_Peb_predicted", "6_PebSnd_predicted", "9_ReefH_predicted",
+                                 "10_Reef_predicted", "11_ReefVen_predicted","15_Sand_predicted")
+
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'TB_L3_Hab_EDIT_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(TBL3_Hab_EDIT.prune); text(TBL3_Hab_EDIT.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/TB_L3_Hab_EDIT_prune.txt")
+TBL3_Hab_EDIT.prune 
+sink()
+
+TBtrue.type = as.factor(TBtest[,16])
+TBpredicted = predict(TBL3_Hab_EDIT.prune, TBtest,type="class")
+table(TBtrue.type,TBpredicted)
+
+
+##################
+#### Mangrove ####
+##################
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        MGL3_Hab_EDIT.fit1  <- cv.tree(MGL3_Hab_EDIT.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(MGL3_Hab_EDIT.fit1)
+        summary(MGL3_Hab_EDIT.fit1)
+        png(file = paste('MG_L3_Hab_EDIT_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(MGL3_Hab_EDIT.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 10    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        MGL3_Hab_EDIT.prune <- prune.misclass(MGL3_Hab_EDIT.tree, best = TreeSize) 
+        plot(MGL3_Hab_EDIT.prune); text(MGL3_Hab_EDIT.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(MGL3_Hab_EDIT.prune))
+        png(file = paste('MG_L3_Hab_EDIT_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(MGL3_Hab_EDIT.prune); text(MGL3_Hab_EDIT.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 13.65% with 15 trees
+MGL3_Hab_EDIT.prune <- prune.misclass(MGL3_Hab_EDIT.tree, best = 15)         # choose best tree size and add value in!!!
+plot(MGL3_Hab_EDIT.prune); text(MGL3_Hab_EDIT.prune,cex=0.8)
+
+MGL3_Hab_EDIT.predict <- predict(MGL3_Hab_EDIT.prune, MGtest, type = c("vector"))
+MGL3_Hab_EDIT.predict <- as.data.frame(MGL3_Hab_EDIT.predict)
+out.predict.MGL3_Hab_EDIT <- as.data.frame(cbind(MGtest$Long, MGtest$Lat, 
+   MGtest$L3_Hab_EDIT, MGL3_Hab_EDIT.predict))
+names(out.predict.MGL3_Hab_EDIT) <- c("X", "Y", "L3_Hab_EDIT.test",  "1_CobVen_predicted","4_GravSnd_predicted", 
+                                 "6_PebSnd_predicted",  "8_CobRf_predicted", "9_ReefH_predicted",  "10_Reef_predicted",
+                                 "11_ReefVen_predicted","15_Sand_predicted")
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'MG_L3_Hab_EDIT_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(MGL3_Hab_EDIT.prune); text(MGL3_Hab_EDIT.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/MG_L3_Hab_EDIT_prune.txt")
+MGL3_Hab_EDIT.prune 
+sink()
+
+MGtrue.type = as.factor(MGtest[,16])
+MGpredicted = predict(MGL3_Hab_EDIT.prune, MGtest,type="class")
+table(MGtrue.type,MGpredicted)
+
+#######################
+#### Southern Site ####
+######################
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/Misclassification")
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        SSL3_Hab_EDIT.fit1  <- cv.tree(SSL3_Hab_EDIT.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(SSL3_Hab_EDIT.fit1)
+        summary(SSL3_Hab_EDIT.fit1)
+        png(file = paste('SS_L3_Hab_EDIT_Misclassification',i, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(SSL3_Hab_EDIT.fit1)
+        dev.off()
+        }
+par(mfrow=c(1,1)) 
+
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/TreeSize")
+
+par(mfrow=c(2,2)) ## makes graphs appear in 2 rows and 2 columns - 4 per page
+
+TreeSize <- 12    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        SSL3_Hab_EDIT.prune <- prune.misclass(SSL3_Hab_EDIT.tree, best = TreeSize) 
+        plot(SSL3_Hab_EDIT.prune); text(SSL3_Hab_EDIT.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(SSL3_Hab_EDIT.prune))
+        png(file = paste('SS_L3_Hab_EDIT_TreeSize',TreeSize, '.png', sep = ''), 
+            width = 4, height = 4, units = 'in', res = 300)
+        plot(SSL3_Hab_EDIT.prune); text(SSL3_Hab_EDIT.prune,cex=0.4,srt=0)
+        dev.off()
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### misclassification rate 16.91% with 18 trees
+SSL3_Hab_EDIT.prune <- prune.misclass(SSL3_Hab_EDIT.tree, best = 18)         # choose best tree size and add value in!!!
+plot(SSL3_Hab_EDIT.prune); text(SSL3_Hab_EDIT.prune,cex=0.8)
+
+SSL3_Hab_EDIT.predict <- predict(SSL3_Hab_EDIT.prune, SStest, type = c("vector"))
+SSL3_Hab_EDIT.predict <- as.data.frame(SSL3_Hab_EDIT.predict)
+out.predict.SSL3_Hab_EDIT <- as.data.frame(cbind(SStest$Long, SStest$Lat, 
+   SStest$L3_Hab_EDIT, SSL3_Hab_EDIT.predict))
+names(out.predict.SSL3_Hab_EDIT) <- c("X", "Y", "L3_Hab_EDIT.test",  "4_GravSnd_predicted", "6_PebSnd_predicted",
+                                      "8_CobRf_predicted", "9_ReefH_predicted", "10_Reef_predicted", 
+                                 "11_ReefVen_predicted", "13_Rho_predicted",  "14_RhoGS_predicted",  
+                                 "15_Sand_predicted")
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree")
+png(file = 'SS_L3_Hab_EDIT_PrunedTree.png', width = 4, height = 4, units = 'in', res = 300)
+plot(SSL3_Hab_EDIT.prune); text(SSL3_Hab_EDIT.prune,cex=0.4,srt=0)
+dev.off()
+
+sink("C:/OneDrive/C3_Map/CT_Outputs/Figures/FinalTree/SS_L3_Hab_EDIT_prune.txt")
+SSL3_Hab_EDIT.prune 
+sink()
+
+SStrue.type = as.factor(SStest[,16])
+SSpredicted = predict(SSL3_Hab_EDIT.prune, SStest,type="class")
+table(SStrue.type,SSpredicted)
+
+
+#########################################################
+## Predict Level 3 CATAMI EDIT Substrate for each site ##
+#########################################################
+
+###############
+## ALL SITES ##
+###############
+
+
+L3_Hab_EDIT.rs.predict1 <- predict(L3_Hab_EDIT.prune, points1, type = c("vector"))
+L3_Hab_EDIT.predict1 <- as.data.frame(L3_Hab_EDIT.rs.predict1)
+pred.L3_Hab_EDIT1 <- as.data.frame(cbind(points1$Long, points1$Lat,  L3_Hab_EDIT.predict1))
+names(pred.L3_Hab_EDIT1) <- c("X","Y", "1_CobVen_predicted",  "3_Grav_predicted",
+                               "4_GravSnd_predicted",  "5_Peb_predicted", "6_PebSnd_predicted",
+                               "8_CobRf_predicted", "9_ReefH_predicted",  "10_Reef_predicted", "11_ReefVen_predicted",
+                               "13_Rho_predicted", "14_RhoGS_predicted",  "15_Sand_predicted")
+
+L3_Hab_EDIT.rs.predict2 <- predict(L3_Hab_EDIT.prune, points2, type = c("vector"))
+L3_Hab_EDIT.predict2 <- as.data.frame(L3_Hab_EDIT.rs.predict2)
+pred.L3_Hab_EDIT2 <- as.data.frame(cbind(points2$Long, points2$Lat,  L3_Hab_EDIT.predict2))
+names(pred.L3_Hab_EDIT2) <- c("X","Y", "1_CobVen_predicted",  "3_Grav_predicted",
+                               "4_GravSnd_predicted",  "5_Peb_predicted", "6_PebSnd_predicted",
+                               "8_CobRf_predicted", "9_ReefH_predicted",  "10_Reef_predicted", "11_ReefVen_predicted",
+                               "13_Rho_predicted", "14_RhoGS_predicted",  "15_Sand_predicted")
+
+L3_Hab_EDIT.rs.predict3 <- predict(L3_Hab_EDIT.prune, points3, type = c("vector"))
+L3_Hab_EDIT.predict3 <- as.data.frame(L3_Hab_EDIT.rs.predict3)
+pred.L3_Hab_EDIT3 <- as.data.frame(cbind(points3$Long, points3$Lat,  L3_Hab_EDIT.predict3))
+names(pred.L3_Hab_EDIT3) <- c("X","Y", "1_CobVen_predicted",  "3_Grav_predicted",
+                               "4_GravSnd_predicted",  "5_Peb_predicted", "6_PebSnd_predicted",
+                               "8_CobRf_predicted", "9_ReefH_predicted",  "10_Reef_predicted", "11_ReefVen_predicted",
+                               "13_Rho_predicted", "14_RhoGS_predicted",  "15_Sand_predicted")
+
+
+
+#########################
+## Helby Banks Predict ##
+#########################
+
+HB.L3_Hab_EDIT.rs.predict <- predict(HBL3_Hab_EDIT.prune, HBpoints, type = c("vector"))
+HB.L3_Hab_EDIT.predict <- as.data.frame(HB.L3_Hab_EDIT.rs.predict)
+predHB.L3_Hab_EDIT <- as.data.frame(cbind(HBpoints$Long, HBpoints$Lat,  HB.L3_Hab_EDIT.predict))
+names(predHB.L3_Hab_EDIT) <- c("X", "Y", "1_CobVen_predicted",
+                                 "3_Grav_predicted","4_GravSnd_predicted", "6_PebSnd_predicted",
+                               "8_CobRf_predicted", "9_ReefH_predicted",  "10_Reef_predicted", "11_ReefVen_predicted",
+                               "14_RhoGS_predicted",  "15_Sand_predicted")
+
+
+#######################
+## Tantabiddi Predict ##
+#######################
+
+TB.L3_Hab_EDIT.rs.predict <- predict(TBL3_Hab_EDIT.prune, TBpoints, type = c("vector"))
+TB.L3_Hab_EDIT.predict <- as.data.frame(TB.L3_Hab_EDIT.rs.predict)
+predTB.L3_Hab_EDIT <- as.data.frame(cbind(TBpoints$Long, TBpoints$Lat,  TB.L3_Hab_EDIT.predict))
+names(predTB.L3_Hab_EDIT) <- c("X", "Y",  "1_CobVen_predicted",
+                                 "3_Grav_predicted","4_GravSnd_predicted",  "5_Peb_predicted", 
+                               "6_PebSnd_predicted", "9_ReefH_predicted",
+                                 "10_Reef_predicted", "11_ReefVen_predicted","15_Sand_predicted")
+
+#######################
+## Mangrove Predict ##
+######################
+
+MG.L3_Hab_EDIT.rs.predict <- predict(MGL3_Hab_EDIT.prune, MGpoints, type = c("vector"))
+MG.L3_Hab_EDIT.predict <- as.data.frame(MG.L3_Hab_EDIT.rs.predict)
+predMG.L3_Hab_EDIT <- as.data.frame(cbind(MGpoints$Long, MGpoints$Lat, MG.L3_Hab_EDIT.predict))
+names(predMG.L3_Hab_EDIT) <- c("X", "Y",  "1_CobVen_predicted","4_GravSnd_predicted", 
+                                 "6_PebSnd_predicted",  "8_CobRf_predicted", "9_ReefH_predicted",  "10_Reef_predicted",
+                                 "11_ReefVen_predicted","15_Sand_predicted")
+
+###########################
+## Southern Site Predict ##
+###########################
+
+SS.L3_Hab_EDIT.rs.predict <- predict(SSL3_Hab_EDIT.prune, SSpoints, type = c("vector"))
+SS.L3_Hab_EDIT.predict <- as.data.frame(SS.L3_Hab_EDIT.rs.predict)
+predSS.L3_Hab_EDIT <- as.data.frame(cbind(SSpoints$Lat, SSpoints$Long, SS.L3_Hab_EDIT.predict))
+names(predSS.L3_Hab_EDIT) <- c("Y", "X",  "4_GravSnd_predicted", "6_PebSnd_predicted",
+                                      "8_CobRf_predicted", "9_ReefH_predicted", "10_Reef_predicted", 
+                                 "11_ReefVen_predicted", "13_Rho_predicted",  "14_RhoGS_predicted")
+
+
+
+
+#########################
+## Export to ASCII ##
+#########################
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/Lv3EDITOutputs")
+
+###############
+## All Sites ##
+###############
+
+coordinates(pred.L3_Hab_EDIT1) <- ~X+Y
+ext <- extent(pred.L3_Hab_EDIT1)
+r <- raster(ext=ext,res=0.0000483000000031097)
+to_ascii_1 <- rasterize(pred.L3_Hab_EDIT1, r, '1_CobVen_predicted')
+to_ascii_3 <- rasterize(pred.L3_Hab_EDIT1, r, '3_Grav_predicted')
+to_ascii_4 <- rasterize(pred.L3_Hab_EDIT1, r, '4_GravSnd_predicted')
+to_ascii_5 <- rasterize(pred.L3_Hab_EDIT1, r, '5_Peb_predicted')
+to_ascii_6 <- rasterize(pred.L3_Hab_EDIT1, r, '6_PebSnd_predicted')
+to_ascii_8 <- rasterize(pred.L3_Hab_EDIT1, r, '8_CobRf_predicted')
+to_ascii_9 <- rasterize(pred.L3_Hab_EDIT1, r, '9_ReefH_predicted')
+to_ascii_10 <- rasterize(pred.L3_Hab_EDIT1, r, '10_Reef_predicted')
+to_ascii_11 <- rasterize(pred.L3_Hab_EDIT1, r, '11_ReefVen_predicted')
+to_ascii_13 <- rasterize(pred.L3_Hab_EDIT1, r, '13_Rho_predicted')
+to_ascii_14 <- rasterize(pred.L3_Hab_EDIT1, r, '14_RhoGS_predicted')
+to_ascii_15 <- rasterize(pred.L3_Hab_EDIT1, r, '15_Sand_predicted')
+
+writeRaster(to_ascii_1,'L3_1CbVen.asc', format='ascii')
+writeRaster(to_ascii_3,'L3_3Grv.asc', format='ascii')
+writeRaster(to_ascii_4,'L3_4GvSnd.asc', format='ascii')
+writeRaster(to_ascii_5,'L3_5Peb.asc', format='ascii')
+writeRaster(to_ascii_6,'L3_6PbSnd.asc', format='ascii')
+writeRaster(to_ascii_8,'L3_8Cob.asc', format='ascii')
+writeRaster(to_ascii_9,'L3_9ReefH.asc', format='ascii')
+writeRaster(to_ascii_10,'L3_10ReefL.asc', format='ascii')
+writeRaster(to_ascii_11,'L3_11RfVen.asc', format='ascii')
+writeRaster(to_ascii_13,'L3_13Rho.asc', format='ascii')
+writeRaster(to_ascii_14,'L3_14RhoGS.asc', format='ascii')
+writeRaster(to_ascii_15,'L3_15Sand.asc', format='ascii')
+
+
+coordinates(pred.L3_Hab_EDIT2) <- ~X+Y
+ext2 <- extent(pred.L3_Hab_EDIT2)
+r2 <- raster(ext=ext2,res=0.0000483000000031097)
+to_ascii2_1 <- rasterize(pred.L3_Hab_EDIT2, r2, '1_CobVen_predicted')
+to_ascii2_3 <- rasterize(pred.L3_Hab_EDIT2, r2, '3_Grav_predicted')
+to_ascii2_4 <- rasterize(pred.L3_Hab_EDIT2, r2, '4_GravSnd_predicted')
+to_ascii2_5 <- rasterize(pred.L3_Hab_EDIT2, r2, '5_Peb_predicted')
+to_ascii2_6 <- rasterize(pred.L3_Hab_EDIT2, r2, '6_PebSnd_predicted')
+to_ascii2_8 <- rasterize(pred.L3_Hab_EDIT2, r2, '8_CobRf_predicted')
+to_ascii2_9 <- rasterize(pred.L3_Hab_EDIT2, r2, '9_ReefH_predicted')
+to_ascii2_10 <- rasterize(pred.L3_Hab_EDIT2, r2, '10_Reef_predicted')
+to_ascii2_11 <- rasterize(pred.L3_Hab_EDIT2, r2, '11_ReefVen_predicted')
+to_ascii2_13 <- rasterize(pred.L3_Hab_EDIT2, r2, '13_Rho_predicted')
+to_ascii2_14 <- rasterize(pred.L3_Hab_EDIT2, r2, '14_RhoGS_predicted')
+to_ascii2_15 <- rasterize(pred.L3_Hab_EDIT2, r2, '15_Sand_predicted')
+
+writeRaster(to_ascii2_1,'L3_1CbVen.asc', format='ascii')
+writeRaster(to_ascii2_3,'L3_3Grv2.asc', format='ascii')
+writeRaster(to_ascii2_4,'L3_4GvSnd2.asc', format='ascii')
+writeRaster(to_ascii2_5,'L3_5Peb2.asc', format='ascii')
+writeRaster(to_ascii2_6,'L3_6PbSnd2.asc', format='ascii')
+writeRaster(to_ascii2_8,'L3_8Cob2.asc', format='ascii')
+writeRaster(to_ascii2_9,'L3_9ReefH2.asc', format='ascii')
+writeRaster(to_ascii2_10,'L3_10ReefL2.asc', format='ascii')
+writeRaster(to_ascii2_11,'L3_11RfVen.asc', format='ascii')
+writeRaster(to_ascii2_13,'L2_13Rho2.asc', format='ascii')
+writeRaster(to_ascii2_14,'L3_14RhoGS2.asc', format='ascii')
+writeRaster(to_ascii2_15,'L3_15Sand2.asc', format='ascii')
+
+
+
+coordinates(pred.L3_Hab_EDIT3) <- ~X+Y
+ext3 <- extent(pred.L3_Hab_EDIT3)
+r3 <- raster(ext=ext3,res=0.0000483000000031097)
+to_ascii3_1 <- rasterize(pred.L3_Hab_EDIT3, r3, '1_CobVen_predicted')
+to_ascii3_3 <- rasterize(pred.L3_Hab_EDIT3, r3, '3_Grav_predicted')
+to_ascii3_4 <- rasterize(pred.L3_Hab_EDIT3, r3, '4_GravSnd_predicted')
+to_ascii3_5 <- rasterize(pred.L3_Hab_EDIT3, r3, '5_Peb_predicted')
+to_ascii3_6 <- rasterize(pred.L3_Hab_EDIT3, r3, '6_PebSnd_predicted')
+to_ascii3_8 <- rasterize(pred.L3_Hab_EDIT3, r3, '8_CobRf_predicted')
+to_ascii3_9 <- rasterize(pred.L3_Hab_EDIT3, r3, '9_ReefH_predicted')
+to_ascii3_10 <- rasterize(pred.L3_Hab_EDIT3, r3, '10_Reef_predicted')
+to_ascii3_11 <- rasterize(pred.L3_Hab_EDIT3, r3, '11_ReefVen_predicted')
+to_ascii3_13 <- rasterize(pred.L3_Hab_EDIT3, r3, '13_Rho_predicted')
+to_ascii3_14 <- rasterize(pred.L3_Hab_EDIT3, r3, '14_RhoGS_predicted')
+to_ascii3_15 <- rasterize(pred.L3_Hab_EDIT3, r3, '15_Sand_predicted')
+
+writeRaster(to_ascii3_1,'L3_1CbVen.asc', format='ascii')
+writeRaster(to_ascii3_3,'L3_3Grv3.asc', format='ascii')
+writeRaster(to_ascii3_4,'L3_4GvSnd3.asc', format='ascii')
+writeRaster(to_ascii3_5,'L3_5Peb3.asc', format='ascii')
+writeRaster(to_ascii3_6,'L3_6PbSnd3.asc', format='ascii')
+writeRaster(to_ascii3_8,'L3_8Cob3.asc', format='ascii')
+writeRaster(to_ascii3_9,'L3_9ReefH3.asc', format='ascii')
+writeRaster(to_ascii3_10,'L3_10ReefL3.asc', format='ascii')
+writeRaster(to_ascii3_11,'L3_11RfVen.asc', format='ascii')
+writeRaster(to_ascii3_13,'L3_13Rho3.asc', format='ascii')
+writeRaster(to_ascii3_14,'L3_14RhoGS3.asc', format='ascii')
+writeRaster(to_ascii3_15,'L3_15Sand3.asc', format='ascii')
+
+
+
+
+#################
+## Helby Banks ##
+#################
+
+coordinates(predHB.L3_Hab_EDIT) <- ~X+Y
+extHB <- extent(predHB.L3_Hab_EDIT)
+table(diff(predHB.L3_Hab_EDIT@coords[,1]))
+rHB <- raster(ext=extHB,res=0.0000483000000031097)
+# Final raster
+to_asciiHB_1 <- rasterize(predHB.L3_Hab_EDIT, rHB, '1_CobVen_predicted')
+to_asciiHB_3 <- rasterize(predHB.L3_Hab_EDIT, rHB, '3_Grav_predicted')
+to_asciiHB_4 <- rasterize(predHB.L3_Hab_EDIT, rHB, '4_GravSnd_predicted')
+to_asciiHB_6 <- rasterize(predHB.L3_Hab_EDIT, rHB, '6_PebSnd_predicted')
+to_asciiHB_8 <- rasterize(predHB.L3_Hab_EDIT, rHB, '8_CobRf_predicted')
+to_asciiHB_9 <- rasterize(predHB.L3_Hab_EDIT, rHB, '9_ReefH_predicted')
+to_asciiHB_10 <- rasterize(predHB.L3_Hab_EDIT, rHB, '10_Reef_predicted')
+to_asciiHB_11 <- rasterize(predHB.L3_Hab_EDIT, rHB, '11_ReefVen_predicted')
+to_asciiHB_14 <- rasterize(predHB.L3_Hab_EDIT, rHB, '14_RhoGS_predicted')
+to_asciiHB_15 <- rasterize(predHB.L3_Hab_EDIT, rHB, '15_Sand_predicted')
+
+writeRaster(to_asciiHB_1,'HBL3_1CbVen.asc', format='ascii')
+writeRaster(to_asciiHB_3,'HBL3_3Grv.asc', format='ascii')
+writeRaster(to_asciiHB_4,'HBL3_4GvSnd.asc', format='ascii')
+writeRaster(to_asciiHB_6,'HBL3_6PbSnd.asc', format='ascii')
+writeRaster(to_asciiHB_8,'HBL3_8Cob.asc', format='ascii')
+writeRaster(to_asciiHB_9,'HBL3_9ReefH.asc', format='ascii')
+writeRaster(to_asciiHB_10,'HBL3_10ReefL.asc', format='ascii')
+writeRaster(to_asciiHB_11,'HBL3_11RfVen.asc', format='ascii')
+writeRaster(to_asciiHB_14,'HBL3_14RhoGS.asc', format='ascii')
+writeRaster(to_asciiHB_15,'HBL3_15Sand.asc', format='ascii')
+
+
+################
+## Tantabiddi ##
+################
+
+coordinates(predTB.L3_Hab_EDIT) <- ~X+Y
+extTB <- extent(predTB.L3_Hab_EDIT)
+table(diff(predTB.L3_Hab_EDIT@coords[,1]))
+rTB <- raster(ext=extTB,res=0.0000483000000031097)
+# Final raster
+to_asciiTB_1 <- rasterize(predTB.L3_Hab_EDIT, rTB, '1_CobVen_predicted')
+to_asciiTB_3 <- rasterize(predTB.L3_Hab_EDIT, rTB, '3_Grav_predicted')
+to_asciiTB_5 <- rasterize(predTB.L3_Hab_EDIT, rTB, '5_Peb_predicted')
+to_asciiTB_6 <- rasterize(predTB.L3_Hab_EDIT, rTB, '6_PebSnd_predicted')
+to_asciiTB_9 <- rasterize(predTB.L3_Hab_EDIT, rTB, '9_ReefH_predicted')
+to_asciiTB_10 <- rasterize(predTB.L3_Hab_EDIT, rTB, '10_Reef_predicted')
+to_asciiTB_11 <- rasterize(predTB.L3_Hab_EDIT, rTB, '11_ReefVen_predicted')
+to_asciiTB_15 <- rasterize(predTB.L3_Hab_EDIT, rTB, '15_Sand_predicted')
+to_asciiTB_17 <- rasterize(predTB.L3_Hab_EDIT, rTB, '4_GravSnd_predicted')
+
+writeRaster(to_asciiTB_1,'TBL3_1CbVen.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_3,'TBL3_3Grv.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_5,'TBL3_5Peb3.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_6,'TBL3_6PbSnd.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_9,'TBL3_9ReefH.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_10,'TBL3_10ReefL.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_11,'TBL3_11RfVen.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_15,'TBL3_15Sand.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiTB_17,'TBL3_4GrSnd.asc', format='ascii', overwrite = TRUE)
+
+
+##############
+## Mangrove ##
+##############
+
+coordinates(predMG.L3_Hab_EDIT) <- ~X+Y
+extMG <- extent(predMG.L3_Hab_EDIT)
+table(diff(predMG.L3_Hab_EDIT@coords[,1]))
+rMG <- raster(ext=extMG,res=0.0000483000000031097)
+# Final raster
+to_asciiMG_2 <- rasterize(predMG.L3_Hab_EDIT, rMG, '1_CobVen_predicted')
+to_asciiMG_6 <- rasterize(predMG.L3_Hab_EDIT, rMG, '6_PebSnd_predicted')
+to_asciiMG_8 <- rasterize(predMG.L3_Hab_EDIT, rMG, '8_CobRf_predicted')
+to_asciiMG_9 <- rasterize(predMG.L3_Hab_EDIT, rMG, '9_ReefH_predicted')
+to_asciiMG_10 <- rasterize(predMG.L3_Hab_EDIT, rMG, '10_Reef_predicted')
+to_asciiMG_11 <- rasterize(predMG.L3_Hab_EDIT, rMG, '11_ReefVen_predicted')
+to_asciiMG_15 <- rasterize(predMG.L3_Hab_EDIT, rMG, '15_Sand_predicted')
+to_asciiMG_17 <- rasterize(predMG.L3_Hab_EDIT, rMG, '4_GravSnd_predicted')
+
+writeRaster(to_asciiMG_2,'MGL3_2CbVen.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiMG_6,'MGL3_6PbSnd.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiMG_8,'MGL3_8Cob.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiMG_9,'MGL3_9ReefH.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiMG_10,'MGL3_10ReefL.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiMG_11,'MGL3_11RfTkV.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiMG_15,'MGL3_15Sand.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiMG_17,'MGL3_4GrSnd.asc', format='ascii', overwrite = TRUE)
+
+##################
+## Southern Site ##
+###################
+
+coordinates(predSS.L3_Hab_EDIT) <- ~X+Y
+extSS <- extent(predSS.L3_Hab_EDIT)
+table(diff(predSS.L3_Hab_EDIT@coords[,1]))
+rSS <- raster(ext=extSS,res=0.000048500000005447)
+# Final raster
+to_asciiSS_8 <- rasterize(predSS.L3_Hab_EDIT, rSS, '8_CobRf_predicted')
+to_asciiSS_9 <- rasterize(predSS.L3_Hab_EDIT, rSS, '9_ReefH_predicted')
+to_asciiSS_10 <- rasterize(predSS.L3_Hab_EDIT, rSS, '10_Reef_predicted')
+to_asciiSS_12 <- rasterize(predSS.L3_Hab_EDIT, rSS, '11_ReefVen_predicted')
+to_asciiSS_13 <- rasterize(predSS.L3_Hab_EDIT, rSS, '13_Rho_predicted')
+to_asciiSS_14 <- rasterize(predSS.L3_Hab_EDIT, rSS, '14_RhoGS_predicted')
+to_asciiSS_15 <- rasterize(predSS.L3_Hab_EDIT, rSS, '15_Sand_predicted')
+to_asciiSS_16 <- rasterize(predSS.L3_Hab_EDIT, rSS, '6_PebSnd_predicted')
+to_asciiSS_17 <- rasterize(predSS.L3_Hab_EDIT, rSS, '4_GravSnd_predicted')
+
+
+writeRaster(to_asciiSS_8,'SSL3_8Cob.asc', format='ascii')
+writeRaster(to_asciiSS_9,'SSL3_9ReefH.asc', format='ascii')
+writeRaster(to_asciiSS_10,'SSL3_10ReefL.asc', format='ascii')
+writeRaster(to_asciiSS_12,'SSL3_11RfVen.asc', format='ascii')
+writeRaster(to_asciiSS_13,'SSL3_13Rho.asc', format='ascii')
+writeRaster(to_asciiSS_14,'SSL3_14RhoGS.asc', format='ascii')
+writeRaster(to_asciiSS_15,'SSL3_15Sand.asc', format='ascii')
+writeRaster(to_asciiSS_16,'SSL3_6PbSnd.asc', format='ascii', overwrite = TRUE)
+writeRaster(to_asciiSS_17,'SSL3_4GrSnd.asc', format='ascii', overwrite = TRUE)
+
+
+################################################################
+## WRITE OUT.PREDICT files to CSV to use for ROC CALCULATIONS ##
+################################################################
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/ROCtests")
+
+write.csv(out.predict.HBL3_Hab_EDIT, "16_OutPredict_HB_L3EDIT_Hab_5m.csv")
+write.csv(out.predict.TBL3_Hab_EDIT, "17_OutPredict_TB_L3EDIT_Hab_5m.csv")
+write.csv(out.predict.MGL3_Hab_EDIT, "18_OutPredict_MG_L3EDIT_Hab_5m.csv")
+write.csv(out.predict.SSL3_Hab_EDIT, "19_OutPredict_SS_L3EDIT_Hab_5m.csv")
+write.csv(out.predict.L3_Hab_EDIT, "20_OutPredict_All_L3EDIT_Hab_5m.csv")
+
+```
+
+
+
+
+
+
+
+
+
+```{r Export matrix for BER calculation}
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/BER")
+
+#############
+## LEVEL 1 ##
+#############
+
+HBtrue.type1 = as.factor(HBtest[,13])
+HBpredicted1 = predict(HBL1_Hab.prune, HBtest,type="class")
+table(HBtrue.type1,HBpredicted1)
+
+TBtrue.type1 = as.factor(TBtest[,13])
+TBpredicted1 = predict(TBL1_Hab.prune, TBtest,type="class")
+table(TBtrue.type1,TBpredicted1)
+
+MGtrue.type1 = as.factor(MGtest[,13])
+MGpredicted1 = predict(MGL1_Hab.prune, MGtest,type="class")
+table(MGtrue.type1,MGpredicted1)
+
+SStrue.type1 = as.factor(SStest[,13])
+SSpredicted1 = predict(SSL1_Hab.prune, SStest,type="class")
+table(SStrue.type1,SSpredicted1)
+
+true.type1 = as.factor(test[,13])
+predicted1 = predict(L1_Hab.prune, test,type="class")
+table(true.type1,predicted1)
+
+write.csv(table(HBtrue.type1,HBpredicted1), "1_HB_Lv1_MisclassMatrix.csv")
+write.csv(table(TBtrue.type1,TBpredicted1), "2_TB_Lv1_MisclassMatrix.csv")
+write.csv(table(MGtrue.type1,MGpredicted1), "3_MG_Lv1_MisclassMatrix.csv")
+write.csv(table(SStrue.type1,SSpredicted1), "4_SS_Lv1_MisclassMatrix.csv")
+write.csv(table(true.type1,predicted1), "5_ALL_SITES_Lv1_MisclassMatrix.csv")
+
+
+
+
+##############
+## LEVEL 2 ##
+#############
+
+HBtrue.type2 = as.factor(HBtest[,14])
+HBpredicted2 = predict(HBL2_Hab.prune, HBtest,type="class")
+table(HBtrue.type2,HBpredicted2)
+
+TBtrue.type2 = as.factor(TBtest[,14])
+TBpredicted2 = predict(TBL2_Hab.prune, TBtest,type="class")
+table(TBtrue.type2,TBpredicted2)
+
+MGtrue.type2 = as.factor(MGtest[,14])
+MGpredicted2 = predict(MGL2_Hab.prune, MGtest,type="class")
+table(MGtrue.type2,MGpredicted2)
+
+SStrue.type2 = as.factor(SStest[,14])
+SSpredicted2 = predict(SSL2_Hab.prune, SStest,type="class")
+table(SStrue.type2,SSpredicted2)
+
+true.type2 = as.factor(test[,14])
+predicted2 = predict(L2_Hab.prune, test,type="class")
+table(true.type2,predicted2)
+
+write.csv(table(HBtrue.type2,HBpredicted2), "6_HB_Lv2_MisclassMatrix.csv")
+write.csv(table(TBtrue.type2,TBpredicted2), "7_TB_Lv2_MisclassMatrix.csv")
+write.csv(table(MGtrue.type2,MGpredicted2), "8_MG_Lv2_MisclassMatrix.csv")
+write.csv(table(SStrue.type2,SSpredicted2), "9_SS_Lv2_MisclassMatrix.csv")
+write.csv(table(true.type2,predicted2), "10_ALL_SITES_Lv2_MisclassMatrix.csv")
+
+
+##############
+## LEVEL 3 ##
+#############
+
+HBtrue.type3 = as.factor(HBtest[,15])
+HBpredicted3 = predict(HBL3_Hab.prune, HBtest,type="class")
+table(HBtrue.type3,HBpredicted3)
+
+TBtrue.type3 = as.factor(TBtest[,15])
+TBpredicted3 = predict(TBL3_Hab.prune, TBtest,type="class")
+table(TBtrue.type3,TBpredicted3)
+
+MGtrue.type3 = as.factor(MGtest[,15])
+MGpredicted3 = predict(MGL3_Hab.prune, MGtest,type="class")
+table(MGtrue.type3,MGpredicted3)
+
+SStrue.type3 = as.factor(SStest[,15])
+SSpredicted3 = predict(SSL3_Hab.prune, SStest,type="class")
+table(SStrue.type3,SSpredicted3)
+
+true.type3 = as.factor(test[,15])
+predicted3 = predict(L3_Hab.prune, test,type="class")
+table(true.type3,predicted3)
+
+write.csv(table(HBtrue.type3,HBpredicted3), "11_HB_Lv3_MisclassMatrix.csv")
+write.csv(table(TBtrue.type3,TBpredicted3), "12_TB_Lv3_MisclassMatrix.csv")
+write.csv(table(MGtrue.type3,MGpredicted3), "13_MG_Lv3_MisclassMatrix.csv")
+write.csv(table(SStrue.type3,SSpredicted3), "14_SS_Lv3_MisclassMatrix.csv")
+write.csv(table(true.type3,predicted3), "15_ALL_SITES_Lv3_MisclassMatrix.csv")
+
+
+##################
+## LEVEL 3 EDIT ##
+#################
+
+HBtrue.type3 = as.factor(HBtest[,16])
+HBpredicted3 = predict(HBL3_Hab_EDIT.prune, HBtest,type="class")
+table(HBtrue.type3,HBpredicted3)
+
+TBtrue.type3 = as.factor(TBtest[,16])
+TBpredicted3 = predict(TBL3_Hab_EDIT.prune, TBtest,type="class")
+table(TBtrue.type3,TBpredicted3)
+
+MGtrue.type3 = as.factor(MGtest[,16])
+MGpredicted3 = predict(MGL3_Hab_EDIT.prune, MGtest,type="class")
+table(MGtrue.type3,MGpredicted3)
+
+SStrue.type3 = as.factor(SStest[,16])
+SSpredicted3 = predict(SSL3_Hab_EDIT.prune, SStest,type="class")
+table(SStrue.type3,SSpredicted3)
+
+true.type3 = as.factor(test[,16])
+predicted3 = predict(L3_Hab_EDIT.prune, test,type="class")
+table(true.type3,predicted3)
+
+write.csv(table(HBtrue.type3,HBpredicted3), "16_HB_Lv3_MisclassMatrix.csv")
+write.csv(table(TBtrue.type3,TBpredicted3), "17_TB_Lv3_MisclassMatrix.csv")
+write.csv(table(MGtrue.type3,MGpredicted3), "18_MG_Lv3_MisclassMatrix.csv")
+write.csv(table(SStrue.type3,SSpredicted3), "19_SS_Lv3_MisclassMatrix.csv")
+write.csv(table(true.type3,predicted3), "20_ALL_SITES_Lv3_MisclassMatrix.csv")
+
+```
+
+
+
+
+
+```{r MODEL TUNING}
+
+# http://machinelearningmastery.com/tuning-machine-learning-models-using-the-caret-r-package/
+# https://rdrr.io/cran/e1071/man/tune.html
+# http://web.mit.edu/~r/current/arch/i386_linux26/lib/R/library/e1071/html/tune.html
+
+
+```
+
+
+
+
+
+
+
+
+```{r Calculate ROC}
+
+setwd("C:/OneDrive/C3_Map/CT_Outputs/ROCtests/Edit")
+
+HBauc <- read.csv("6_OutPredict_HB_L2_Hab_5m.csv", header = T)
+
+library(ROCR)
+
+data(ROCR.hiv)
+manypred = prediction(HBauc[,c(5,7,9,11,13)], HBauc[,c(4,6,8,10,12)])
+sn = slotNames(pred)
+sapply(sn, function(x) length(slot(manypred, x)))
+
+many.roc.perf = performance(manypred, measure = "tpr", x.measure = "fpr")
+plot(many.roc.perf, col=1:5)
+abline(a=0, b= 1)
+
+many.acc.perf = performance(manypred, measure = "acc")
+sapply(manypred@labels, function(x) mean(x == 1))
+
+mapply(function(x, y){
+  ind = which.max( y )
+  acc = y[ind]
+  cutoff = x[ind]
+  return(c(accuracy= acc, cutoff = cutoff))
+}, slot(many.acc.perf, "x.values"), slot(many.acc.perf, "y.values"))
+
+manypauc.perf = performance(manypred, measure = "auc", fpr.stop=0.1)
+manypauc.perf@y.values = lapply(manypauc.perf@y.values, function(x) x / 0.1)
+manypauc.perf@y.values
+
+
+```
+
+
+```{r}
+
+#################
+## AUC CURVES ##
+#################
+
+library(ROCR)
+setwd("C:/OneDrive/C3_Map/CT_Outputs/ROCtests/Edit")
+
+filenames <- list.files()  
+for (i in filenames) {  
+   name <- gsub("-",".",i)
+   name <- gsub(".csv","",name)  
+   i <- paste(".\\",i,sep="")
+   assign(name,read.csv(i, header=TRUE))
+} 
+
+
+predictL1ALL <- prediction(as.numeric(as.character(`5_OutPredict_L1_Hab_5m`$PredictedL1_Hab)),
+                           `5_OutPredict_L1_Hab_5m`$L1_Hab.test) 
+perfL1ALL <- performance(predictL1ALL, measure = "tpr", x.measure = "fpr")
+plot(perfL1ALL, mean = "ROC curve for L1 ALL",
+     col = "blue", lwd = 3)
+abline(a=0, b=1, lwd = 2, lty = 2)
+perf.aucL1ALL <- performance(predictL1ALL, measure = "auc")
+str(perf.aucL1ALL)
+unlist(perf.aucL1ALL@y.values)
+
+predictL1HB <- prediction(as.numeric(as.character(`1_OutPredict_HB_L1_Hab_5m`$Hard_predicted)),
+                          `1_OutPredict_HB_L1_Hab_5m`$L1_Hab.test) 
+perfL1HB <- performance(predictL1HB, measure = "tpr", x.measure = "fpr")
+plot(perfL1HB, mean = "ROC curve for L1 HB",
+     col = "blue", lwd = 3)
+abline(a=0, b=1, lwd = 2, lty = 2)
+perf.aucL1HB <- performance(predictL1HB, measure = "auc")
+str(perf.aucL1HB)
+unlist(perf.aucL1HB@y.values)
+
+predictL1TB <- prediction(as.numeric(as.character(`2_OutPredict_TB_L1_Hab_5m`$Hard_predicted)),
+                          `2_OutPredict_TB_L1_Hab_5m`$L1_Hab.test) 
+perfL1TB <- performance(predictL1TB, measure = "tpr", x.measure = "fpr")
+plot(perfL1TB, mean = "ROC curve for L1 TB",
+     col = "blue", lwd = 3)
+abline(a=0, b=1, lwd = 2, lty = 2)
+perf.aucL1TB <- performance(predictL1TB, measure = "auc")
+str(perf.aucL1TB)
+unlist(perf.aucL1TB@y.values)
+
+predictL1MG <- prediction(as.numeric(as.character(`3_OutPredict_MG_L1_Hab_5m`$Hard_predicted)),
+                          `3_OutPredict_MG_L1_Hab_5m`$L1_Hab.test)
+perfL1MG <- performance(predictL1MG, measure = "tpr", x.measure = "fpr")
+plot(perfL1MG, mean = "ROC curve for L1 MG",
+     col = "blue", lwd = 3)
+abline(a=0, b=1, lwd = 2, lty = 2)
+perf.aucL1MG <- performance(predictL1MG, measure = "auc")
+str(perf.aucL1MG)
+unlist(perf.aucL1MG@y.values)
+
+predictL1SS <- prediction(as.numeric(as.character(`4_OutPredict_SS_L1_Hab_5m`$Hard_predicted)),
+                          `4_OutPredict_SS_L1_Hab_5m`$L1_Hab.test)
+perfL1SS <- performance(predictL1SS, measure = "tpr", x.measure = "fpr")
+plot(perfL1SS, mean = "ROC curve for L1 SS",
+     col = "blue", lwd = 3)
+abline(a=0, b=1, lwd = 2, lty = 2)
+perf.aucL1SS <- performance(predictL1SS, measure = "auc")
+str(perf.aucL1SS)
+unlist(perf.aucL1SS@y.values)
+
+
+```

@@ -1,0 +1,2391 @@
+---
+title: "Mapping"
+author: "Joe Turner"
+date: "30 March 2017"
+output: pdf_document
+---
+
+```{read in data and packages, include=FALSE}
+
+library(rpart)
+library(tree)
+library(randomForest)
+library(e1071)
+library(plyr)
+library(vegan)
+library(doBy)
+library(rgdal)
+library(clustsig)
+library(gdata)
+library(ggplot2)
+library(scales)
+library(ggrepel)
+library(RColorBrewer)
+library(reshape2)
+library(reshape)
+library(grid)
+library(dplR)
+library(gridExtra)
+library(Hmisc)
+library(corrplot)
+library(PerformanceAnalytics)
+library(raster)
+st.err <- function(x) {sd(x)/sqrt(length(x))}
+
+setwd("C:/OneDrive/C3_Map")
+GT <- read.csv("8_GIS_GT_Intercept_5m_9999_Removed.csv", header = TRUE)
+Helby <- read.csv("9_HelbyBanks_GT_5m.csv", header = TRUE)
+Tanta <- read.csv("10_Tantabiddi_GT_5m.csv", header = TRUE)
+Mgrove <- read.csv("11_Mangrove_GT_5m.csv", header = TRUE)
+South <- read.csv("12_SouthSite_GT_5m.csv", header = TRUE)
+
+setwd("C:/OneDrive/C3_Map/PointsForPrediction")
+
+HBpoints <- read.csv("Helby_Predict_5m.csv", header = TRUE)
+TBpoints <- read.csv("Tanta_Predict_5m.csv", header = TRUE)
+MGpoints <- read.csv("Mangrove_Predict_5m.csv", header = TRUE)
+SSpoints <- read.csv("South_Predict_5m.csv", header = TRUE)
+points1 <- read.csv("AllSites_Predict_5m_1.csv", header = TRUE)
+points2 <- read.csv("AllSites_Predict_5m_2.csv", header = TRUE)
+points3 <- read.csv("AllSites_Predict_5m_3.csv", header = TRUE)
+
+setwd("C:/OneDrive/C3_Map")
+
+```
+
+```{r correlation matrix}
+
+# http://www.sthda.com/english/wiki/correlation-matrix-a-quick-start-guide-to-analyze-format-and-visualize-a-correlation-matrix-using-r-software
+
+cor <- cor(GT[,32:62])
+round(cor, 2)
+corrplot(cor, method="number")
+corrplot(cor, type="lower")
+
+# can caluculate a correlation matrix with significance levels
+
+cor2 <- rcorr(as.matrix(GT[,32:62]))
+cor2
+# Extract the correlation coefficients
+cor2$r
+# Extract p-values
+cor2$P
+
+# flattenCorrMatrix
+# ++++++++++++++++++++++++++++
+# cormat : matrix of the correlation coefficients
+# pmat : matrix of the correlation p-values
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+    )
+}
+
+res2<-rcorr(as.matrix(GT[,32:62]))
+CorMatrix <- flattenCorrMatrix(res2$r, res2$P)
+write.csv(CorMatrix, "8_Correlation_Matrix.csv")
+
+# Insignificant correlation are left blank
+corrplot(res2$r, type="upper", order="hclust", 
+         p.mat = res2$P, sig.level = 0.01, insig = "blank")
+
+
+# draw scatter plots
+chart.Correlation(GT[,32:62], histogram=TRUE, pch=19)
+
+```
+
+
+```{r select training and evaluation data}
+
+set.seed(387)  
+
+# For all data
+size.modeldata <- round(0.75 * nrow(GT))
+model  <- GT[sample ( 1:nrow(GT), size.modeldata, replace = FALSE),]
+test <- GT[- c( sample ( 1:nrow(GT), size.modeldata, replace = FALSE) ),]
+
+# For Helby Banks
+HBsize.modeldata <- round(0.75 * nrow(Helby))
+HBmodel  <- Helby[sample ( 1:nrow(Helby), HBsize.modeldata, replace = FALSE),]
+HBtest <- Helby[- c( sample ( 1:nrow(Helby), HBsize.modeldata, replace = FALSE) ),]
+
+# For Tantabiddi
+TBsize.modeldata <- round(0.75 * nrow(Tanta))
+TBmodel  <- Tanta[sample ( 1:nrow(Tanta), TBsize.modeldata, replace = FALSE),]
+TBtest <- Tanta[- c( sample ( 1:nrow(Tanta), TBsize.modeldata, replace = FALSE) ),]
+
+# For Mangrove
+MGsize.modeldata <- round(0.75 * nrow(Mgrove))
+MGmodel  <- Mgrove[sample ( 1:nrow(Mgrove), MGsize.modeldata, replace = FALSE),]
+MGtest <- Mgrove[- c( sample ( 1:nrow(Mgrove), MGsize.modeldata, replace = FALSE) ),]
+
+# For Southern Site
+SSsize.modeldata <- round(0.75 * nrow(South))
+SSmodel  <- South[sample ( 1:nrow(South), SSsize.modeldata, replace = FALSE),]
+SStest <- South[- c( sample ( 1:nrow(South), SSsize.modeldata, replace = FALSE) ),]
+
+
+```
+
+
+```{r tree classification}
+
+##############################
+## CLASSIFICATION TREES ##
+##############################
+
+
+############################
+#### Level 2 - BOULDERS ####
+############################
+
+Lv2Bldrs.tree <- tree(as.factor(Lv2_Boulders) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= model, na.action = na.exclude, method = "class")
+
+plot(Lv2Bldrs.tree); text(Lv2Bldrs.tree,cex=0.5)
+
+# Select the best model variables
+Lv2Bldrs.tree <- tree(as.factor(Lv2_Boulders) ~ mean10 + mean25,
+                        data=model, method = "class")
+
+summary(Lv2Bldrs.tree) # MISCLASSIFICATION RATE 0.01%
+
+
+###############################################
+## Test at each site level individually ##
+###############################################
+
+#####################
+## Helby Banks ##
+#####################
+
+HBLv2Bldrs.tree <- tree(as.factor(Lv2_Boulders) ~ Depth + BScatter + curv +	curv_plan +	curv_prof +	slope +	mean3 +	
+                          mean5 + mean10 + mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	
+                          range10 +	range25 + hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	
+                          BPI_F_10 + BPI_F_15 + BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250,
+                     data= HBmodel, na.action = na.exclude, method = "class")
+
+plot(HBLv2Bldrs.tree); text(HBLv2Bldrs.tree,cex=0.5)
+HBLv2Bldrs.tree
+
+# Select the best model variables
+HBLv2Bldrs.tree <- tree(as.factor(Lv2_Boulders) ~ BPI_B_100 + BPI_B_50 + range5,
+                        data=HBmodel, method = "class")
+
+summary(HBLv2Bldrs.tree) # MISCLASSIFICATION RATE 0.08%
+
+
+
+####################
+## Tantabiddi ##
+####################
+
+# No Boulder habitat observed at Tantabiddi
+
+
+##################
+## Mangrove ##
+##################
+
+# No Boulder habitat observed at Mangrove
+
+
+#######################
+## Southern Site ##
+######################
+
+# No Boulder habitat observed at Southern Site
+
+
+
+############################################################
+## Investigating and Pruning the classification trees ##
+############################################################
+
+###################
+## All sites ##
+###################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        Lv2Bldrs.fit1  <- cv.tree(Lv2Bldrs.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(Lv2Bldrs.fit1)
+        summary(Lv2Bldrs.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+
+TreeSize <- 2    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        Lv2Bldrs.prune <- prune.misclass(Lv2Bldrs.tree, best = TreeSize) 
+        plot(Lv2Bldrs.prune); text(Lv2Bldrs.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(Lv2Bldrs.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+####
+Lv2Bldrs.prune <- prune.misclass(Lv2Bldrs.tree, best = 2)         # choose best tree size and add value in!!!
+plot(Lv2Bldrs.prune); text(Lv2Bldrs.prune,cex=0.8)
+
+Lv2Bldrs.predict <- predict(Lv2Bldrs.prune, test, type = c("vector"))
+Lv2Bldrs.predict <- as.data.frame(Lv2Bldrs.predict [,2])
+out.predict.Lv2Bldrs <- as.data.frame(cbind(test$Long, test$Lat, 
+   test$Lv2_Boulders, Lv2Bldrs.predict))
+names(out.predict.Lv2Bldrs) <- c("X", "Y", "Lv2Bldrs.test", "Lv2Bldrs.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/All_Sites_Lv2Bldrs_prune.txt")
+Lv2Bldrs.prune 
+sink()
+
+
+###############################################
+## Test at each site level individually ##
+###############################################
+
+#####################
+## Helby Banks ##
+#####################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        HBLv2Bldrs.fit1  <- cv.tree(HBLv2Bldrs.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(HBLv2Bldrs.fit1)
+        summary(HBLv2Bldrs.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+
+TreeSize <- 2    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        HBLv2Bldrs.prune <- prune.misclass(HBLv2Bldrs.tree, best = TreeSize) 
+        plot(HBLv2Bldrs.prune); text(HBLv2Bldrs.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(HBLv2Bldrs.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+####
+HBLv2Bldrs.prune <- prune.misclass(HBLv2Bldrs.tree, best = 2)         # choose best tree size and add value in!!!
+plot(HBLv2Bldrs.prune); text(HBLv2Bldrs.prune,cex=0.8)
+
+HBLv2Bldrs.predict <- predict(HBLv2Bldrs.prune, HBtest, type = c("vector"))
+HBLv2Bldrs.predict <- as.data.frame(HBLv2Bldrs.predict [,2])
+out.predict.HBLv2Bldrs <- as.data.frame(cbind(HBtest$Long, HBtest$Lat, 
+   HBtest$Lv2_Boulders, HBLv2Bldrs.predict))
+names(out.predict.HBLv2Bldrs) <- c("X", "Y", "Lv2Bldrs.test", "Lv2Bldrs.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/HB_Lv2Bldrs_prune.txt")
+HBLv2Bldrs.prune 
+sink()
+
+
+
+
+###################################################
+## Predict Level 2 CATAMI Boulders for each site ##
+###################################################
+
+###################
+## ALL SITES ##
+###################
+
+
+Lv2Bldrs.rs.predict1 <- predict(Lv2Bldrs.prune, points1, type = c("vector"))
+Lv2Bldrs.predict1 <- as.data.frame(Lv2Bldrs.rs.predict1[,2])
+pred.Lv2Bldrs1 <- as.data.frame(cbind(points1$Long, points1$Lat,  Lv2Bldrs.predict1))
+names(pred.Lv2Bldrs1) <- c("X","Y", "predLv2Bldrs")
+
+Lv2Bldrs.rs.predict2 <- predict(Lv2Bldrs.prune, points2, type = c("vector"))
+Lv2Bldrs.predict2 <- as.data.frame(Lv2Bldrs.rs.predict2[,2])
+pred.Lv2Bldrs2 <- as.data.frame(cbind(points2$Long, points2$Lat,  Lv2Bldrs.predict2))
+names(pred.Lv2Bldrs2) <- c("X","Y", "predLv2Bldrs")
+
+Lv2Bldrs.rs.predict3 <- predict(Lv2Bldrs.prune, points3, type = c("vector"))
+Lv2Bldrs.predict3 <- as.data.frame(Lv2Bldrs.rs.predict3[,2])
+pred.Lv2Bldrs3 <- as.data.frame(cbind(points3$Long, points3$Lat,  Lv2Bldrs.predict3))
+names(pred.Lv2Bldrs3) <- c("X","Y", "predLv2Bldrs")
+
+
+#############################
+## Helby Banks Predict ##
+############################
+
+HB.Lv2Bldrs.rs.predict <- predict(HBLv2Bldrs.prune, HBpoints, type = c("vector"))
+HB.Lv2Bldrs.predict <- as.data.frame(HB.Lv2Bldrs.rs.predict[,2])
+predHB.Lv2Bldrs <- as.data.frame(cbind(HBpoints$Long, HBpoints$Lat,  HB.Lv2Bldrs.predict))
+names(predHB.Lv2Bldrs) <- c("X","Y", "predLv2Bldrs")
+
+
+#########################
+## Export to ASCII ##
+#########################
+
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Lv2Outputs")
+
+
+# All Sites
+coordinates(pred.Lv2Bldrs1) <- ~X+Y
+ext <- extent(pred.Lv2Bldrs1)
+r <- raster(ext=ext,res=0.0000483000000031097)
+to_ascii <- rasterize(pred.Lv2Bldrs1, r, 'predLv2Bldrs')
+writeRaster(to_ascii,'AllLv2Bldr1.asc', format='ascii')
+
+coordinates(pred.Lv2Bldrs2) <- ~X+Y
+ext2 <- extent(pred.Lv2Bldrs2)
+r2 <- raster(ext=ext2,res=0.0000483000000031097)
+to_ascii2 <- rasterize(pred.Lv2Bldrs2, r2, 'predLv2Bldrs')
+writeRaster(to_ascii2,'AllLv2Bldr2.asc', format='ascii', overwrite = TRUE)
+
+coordinates(pred.Lv2Bldrs3) <- ~X+Y
+ext3 <- extent(pred.Lv2Bldrs3)
+r3 <- raster(ext=ext3,res=0.0000483000000031097)
+to_ascii3 <- rasterize(pred.Lv2Bldrs3, r3, 'predLv2Bldrs')
+writeRaster(to_ascii3,'AllLv2Bldr3.asc', format='ascii')
+
+
+# Helby Banks
+coordinates(predHB.Lv2Bldrs) <- ~X+Y
+extHB <- extent(predHB.Lv2Bldrs)
+rHB <- raster(ext=extHB,res=0.0000483000000031097)
+to_asciiHB <- rasterize(predHB.Lv2Bldrs, rHB, 'predLv2Bldrs')
+writeRaster(to_asciiHB,'HBLv2Bldrs.asc', format='ascii')
+
+
+####################################################################
+## WRITE OUT.PREDICT files to CSV to use for ROC CALCULATIONS ##
+####################################################################
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/ROCtests")
+
+write.csv(out.predict.Lv2Bldrs, "5_OutPredict_All_Lv2Bldrs_5m.csv")
+write.csv(out.predict.HBLv2Bldrs, "6_OutPredict_HB_Lv2Bldrs_5m.csv")
+
+```
+
+
+
+
+
+```{r}
+
+####################################
+#### Level 2 - COBBLES ####
+####################################
+
+Lv2Cobbs.tree <- tree(as.factor(Lv2_Cobbles) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= model, na.action = na.exclude, method = "class")
+
+
+plot(Lv2Cobbs.tree); text(Lv2Cobbs.tree,cex=0.5)
+Lv2Cobbs.tree
+
+
+# Select the best model variables
+Lv2Cobbs.tree <- tree(as.factor(Lv2_Cobbles) ~ mean25 + range25 + BPI_B_50 + BPI_B_250 + mean3 + hyp25 + rugosity +
+                        BScatter + std10,
+                        data=model, method = "class")
+
+summary(Lv2Cobbs.tree) # MISCLASSIFICATION RATE 7.1%
+
+
+###############################################
+## Test at each site level individually ##
+###############################################
+
+#####################
+## Helby Banks ##
+#####################
+
+HBLv2Cobbs.tree <- tree(as.factor(Lv2_Cobbles) ~ Depth + BScatter + curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 + 
+                         mean10 + mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	
+                         range25 + hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	
+                         BPI_F_15 + BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250,
+                     data= HBmodel, na.action = na.exclude, method = "class")
+
+
+plot(HBLv2Cobbs.tree); text(HBLv2Cobbs.tree,cex=0.5)
+
+# Select the best model variables
+HBLv2Cobbs.tree <- tree(as.factor(Lv2_Cobbles) ~ range25 + Depth + hyp25 + mean10 + rugosity + BScatter + std25 +
+                          BPI_B_250 + BPI_B_100 + hyp10 + range5,
+                        data=HBmodel, method = "class")
+
+summary(HBLv2Cobbs.tree) # MISCLASSIFICATION RATE 7.2%
+
+
+
+####################
+## Tantabiddi ##
+####################
+
+TBLv2Cobbs.tree <- tree(as.factor(Lv2_Cobbles) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= TBmodel, na.action = na.exclude, method = "class")
+
+
+plot(TBLv2Cobbs.tree); text(TBLv2Cobbs.tree,cex=0.5)
+TBLv2Cobbs.tree
+
+# Select the best model variables
+TBLv2Cobbs.tree <- tree(as.factor(Lv2_Cobbles) ~ std25 + range25 + std3 + mean10 + hyp10 + 
+                         north + east + std10,
+                        data=TBmodel, method = "class")
+
+summary(TBLv2Cobbs.tree) # MISCLASSIFICATION RATE 0.2%
+
+
+
+##################
+## Mangrove ##
+##################
+
+
+MGLv2Cobbs.tree <- tree(as.factor(Lv2_Cobbles) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= MGmodel, na.action = na.exclude, method = "class")
+
+
+plot(MGLv2Cobbs.tree); text(MGLv2Cobbs.tree,cex=0.5)
+MGLv2Cobbs.tree
+
+# Select the best model variables
+MGLv2Cobbs.tree <- tree(as.factor(Lv2_Cobbles) ~ Depth + BPI_B_250 + mean25 + BPI_B_50 + std25,
+                        data=MGmodel, method = "class")
+
+summary(MGLv2Cobbs.tree) # MISCLASSIFICATION RATE 0.06%
+
+
+
+
+#######################
+## Southern Site ##
+######################
+
+
+SSLv2Cobbs.tree <- tree(as.factor(Lv2_Cobbles) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= SSmodel, na.action = na.exclude, method = "class")
+
+
+plot(SSLv2Cobbs.tree); text(SSLv2Cobbs.tree,cex=0.5)
+SSLv2Cobbs.tree
+
+# Select the best model variables
+SSLv2Cobbs.tree <- tree(as.factor(Lv2_Cobbles) ~ BPI_B_250 + std5 + std25 + mean10 + range25 + std10 + 
+                         BPI_B_100 + slope + range10 + range5,
+                        data=SSmodel, method = "class")
+
+summary(SSLv2Cobbs.tree) # MISCLASSIFICATION RATE 1.5%
+
+
+
+############################################################
+## Investigating and Pruning the classification trees ##
+############################################################
+
+###################
+## All sites ##
+###################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        Lv2Cobbs.fit1  <- cv.tree(Lv2Cobbs.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(Lv2Cobbs.fit1)
+        summary(Lv2Cobbs.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+graphics.off()
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        Lv2Cobbs.prune <- prune.misclass(Lv2Cobbs.tree, best = TreeSize) 
+        plot(Lv2Cobbs.prune); text(Lv2Cobbs.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(Lv2Cobbs.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+graphics.off()
+
+#### 7.1% misclass, 8 trees
+Lv2Cobbs.prune <- prune.misclass(Lv2Cobbs.tree, best = 8)         # choose best tree size and add value in!!!
+plot(Lv2Cobbs.prune); text(Lv2Cobbs.prune,cex=0.8)
+summary(Lv2Cobbs.prune) # 7.0% misclassification
+
+Lv2Cobbs.predict <- predict(Lv2Cobbs.prune, test, type = c("vector"))
+Lv2Cobbs.predict <- as.data.frame(Lv2Cobbs.predict [,2])
+out.predict.Lv2Cobbs <- as.data.frame(cbind(test$Long, test$Lat, 
+   test$Lv2_Cobbles, Lv2Cobbs.predict))
+names(out.predict.Lv2Cobbs) <- c("X", "Y", "Lv2Cobbs.test", "Lv2Cobbs.predicted")
+
+
+# Export tree output for plotting with AML 
+# Note this text file has to be edited so that "je." string has to be replaced with the "ri_" text string
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/All_Sites_Lv2Cobbs_prune.txt")
+Lv2Cobbs.prune 
+sink()
+
+
+###############################################
+## Test at each site level individually ##
+###############################################
+
+#####################
+## Helby Banks ##
+#####################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        HBLv2Cobbs.fit1  <- cv.tree(HBLv2Cobbs.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(HBLv2Cobbs.fit1)
+        summary(HBLv2Cobbs.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        HBLv2Cobbs.prune <- prune.misclass(HBLv2Cobbs.tree, best = TreeSize) 
+        plot(HBLv2Cobbs.prune); text(HBLv2Cobbs.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(HBLv2Cobbs.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### 8.3% misclass tree size 12
+HBLv2Cobbs.prune <- prune.misclass(HBLv2Cobbs.tree, best = 12)         # choose best tree size and add value in!!!
+plot(HBLv2Cobbs.prune); text(HBLv2Cobbs.prune,cex=0.8)
+summary(HBLv2Cobbs.prune) # misclassification rate 7.3%
+
+HBLv2Cobbs.predict <- predict(HBLv2Cobbs.prune, HBtest, type = c("vector"))
+HBLv2Cobbs.predict <- as.data.frame(HBLv2Cobbs.predict [,2])
+out.predict.HBLv2Cobbs <- as.data.frame(cbind(HBtest$Long, HBtest$Lat, 
+   HBtest$Lv2_Cobbles, HBLv2Cobbs.predict))
+names(out.predict.HBLv2Cobbs) <- c("X", "Y", "Lv2Cobbs.test", "Lv2Cobbs.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/HB_Lv2Cobbs_prune.txt")
+HBLv2Cobbs.prune 
+sink()
+
+
+####################
+## Tantabiddi ##
+####################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        TBLv2Cobbs.fit1  <- cv.tree(TBLv2Cobbs.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(TBLv2Cobbs.fit1)
+        summary(TBLv2Cobbs.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        TBLv2Cobbs.prune <- prune.misclass(TBLv2Cobbs.tree, best = TreeSize) 
+        plot(TBLv2Cobbs.prune); text(TBLv2Cobbs.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(TBLv2Cobbs.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+#### 0.3% misclass 8 trees
+TBLv2Cobbs.prune <- prune.misclass(TBLv2Cobbs.tree, best = 8)         # choose best tree size and add value in!!!
+plot(TBLv2Cobbs.prune); text(TBLv2Cobbs.prune,cex=0.8)
+summary(TBLv2Cobbs.prune)
+
+TBLv2Cobbs.predict <- predict(TBLv2Cobbs.prune, TBtest, type = c("vector"))
+TBLv2Cobbs.predict <- as.data.frame(TBLv2Cobbs.predict [,2])
+out.predict.TBLv2Cobbs <- as.data.frame(cbind(TBtest$Long, TBtest$Lat, 
+   TBtest$Lv2_Cobbles, TBLv2Cobbs.predict))
+names(out.predict.TBLv2Cobbs) <- c("X", "Y", "Lv2Cobbs.test", "Lv2Cobbs.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/TB_Lv2Cobbs_prune.txt")
+TBLv2Cobbs.prune 
+sink()
+
+
+
+##################
+## Mangrove ##
+##################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        MGLv2Cobbs.fit1  <- cv.tree(MGLv2Cobbs.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(MGLv2Cobbs.fit1)
+        summary(MGLv2Cobbs.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 2    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        MGLv2Cobbs.prune <- prune.misclass(MGLv2Cobbs.tree, best = TreeSize) 
+        plot(MGLv2Cobbs.prune); text(MGLv2Cobbs.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(MGLv2Cobbs.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+## 0.4% misclass 4 trees
+MGLv2Cobbs.prune <- prune.misclass(MGLv2Cobbs.tree, best = 4)         # choose best tree size and add value in!!!
+plot(MGLv2Cobbs.prune); text(MGLv2Cobbs.prune,cex=0.8)
+summary(MGLv2Cobbs.prune)
+
+MGLv2Cobbs.predict <- predict(MGLv2Cobbs.prune, MGtest, type = c("vector"))
+MGLv2Cobbs.predict <- as.data.frame(MGLv2Cobbs.predict [,2])
+out.predict.MGLv2Cobbs <- as.data.frame(cbind(MGtest$Long, MGtest$Lat, 
+   MGtest$Lv2_Cobbles, MGLv2Cobbs.predict))
+names(out.predict.MGLv2Cobbs) <- c("X", "Y", "Lv2Cobbs.test", "Lv2Cobbs.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/MG_Lv2Cobbs_prune.txt")
+MGLv2Cobbs.prune 
+sink()
+
+
+#######################
+## Southern Site ##
+######################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        SSLv2Cobbs.fit1  <- cv.tree(SSLv2Cobbs.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(SSLv2Cobbs.fit1)
+        summary(SSLv2Cobbs.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        SSLv2Cobbs.prune <- prune.misclass(SSLv2Cobbs.tree, best = TreeSize) 
+        plot(SSLv2Cobbs.prune); text(SSLv2Cobbs.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(SSLv2Cobbs.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+#### 3.2% misclass 12 trees
+SSLv2Cobbs.prune <- prune.misclass(SSLv2Cobbs.tree, best = 12)         # choose best tree size and add value in!!!
+plot(SSLv2Cobbs.prune); text(SSLv2Cobbs.prune,cex=0.8)
+summary(SSLv2Cobbs.prune)
+
+SSLv2Cobbs.predict <- predict(SSLv2Cobbs.prune, SStest, type = c("vector"))
+SSLv2Cobbs.predict <- as.data.frame(SSLv2Cobbs.predict [,2])
+out.predict.SSLv2Cobbs <- as.data.frame(cbind(SStest$Long, SStest$Lat, 
+   SStest$Lv2_Cobbles, SSLv2Cobbs.predict))
+names(out.predict.SSLv2Cobbs) <- c("X", "Y", "Lv2Cobbs.test", "Lv2Cobbs.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/SS_Lv2Cobbs_prune.txt")
+SSLv2Cobbs.prune 
+sink()
+
+
+#######################################################
+## Predict Level 2 CATAMI Cobbles for each site ##
+#######################################################
+
+
+## pruned trees ##
+
+Lv2Cobbs.prune
+HBLv2Cobbs.prune
+TBLv2Cobbs.prune
+MGLv2Cobbs.prune
+SSLv2Cobbs.prune
+
+###################
+## ALL SITES ##
+###################
+
+
+Lv2Cobbs.rs.predict1 <- predict(Lv2Cobbs.prune, points1, type = c("vector"))
+Lv2Cobbs.predict1 <- as.data.frame(Lv2Cobbs.rs.predict1[,2])
+pred.Lv2Cobbs1 <- as.data.frame(cbind(points1$Long, points1$Lat,  Lv2Cobbs.predict1))
+names(pred.Lv2Cobbs1) <- c("X","Y", "predLv2Cobbs")
+
+Lv2Cobbs.rs.predict2 <- predict(Lv2Cobbs.prune, points2, type = c("vector"))
+Lv2Cobbs.predict2 <- as.data.frame(Lv2Cobbs.rs.predict2[,2])
+pred.Lv2Cobbs2 <- as.data.frame(cbind(points2$Long, points2$Lat,  Lv2Cobbs.predict2))
+names(pred.Lv2Cobbs2) <- c("X","Y", "predLv2Cobbs")
+
+Lv2Cobbs.rs.predict3 <- predict(Lv2Cobbs.prune, points3, type = c("vector"))
+Lv2Cobbs.predict3 <- as.data.frame(Lv2Cobbs.rs.predict3[,2])
+pred.Lv2Cobbs3 <- as.data.frame(cbind(points3$Long, points3$Lat,  Lv2Cobbs.predict3))
+names(pred.Lv2Cobbs3) <- c("X","Y", "predLv2Cobbs")
+
+
+#############################
+## Helby Banks Predict ##
+############################
+
+HB.Lv2Cobbs.rs.predict <- predict(HBLv2Cobbs.prune, HBpoints, type = c("vector"))
+HB.Lv2Cobbs.predict <- as.data.frame(HB.Lv2Cobbs.rs.predict[,2])
+predHB.Lv2Cobbs <- as.data.frame(cbind(HBpoints$Long, HBpoints$Lat,  HB.Lv2Cobbs.predict))
+names(predHB.Lv2Cobbs) <- c("X","Y", "predLv2Cobbs")
+
+
+###########################
+## Tantabiddi Predict ##
+###########################
+
+TB.Lv2Cobbs.rs.predict <- predict(TBLv2Cobbs.prune, TBpoints, type = c("vector"))
+TB.Lv2Cobbs.predict <- as.data.frame(TB.Lv2Cobbs.rs.predict[,2])
+predTB.Lv2Cobbs <- as.data.frame(cbind(TBpoints$Long, TBpoints$Lat,  TB.Lv2Cobbs.predict))
+names(predTB.Lv2Cobbs) <- c("X", "Y", "predLv2Cobbs")
+
+##########################
+## Mangrove Predict ##
+#########################
+
+MG.Lv2Cobbs.rs.predict <- predict(MGLv2Cobbs.prune, MGpoints, type = c("vector"))
+MG.Lv2Cobbs.predict <- as.data.frame(MG.Lv2Cobbs.rs.predict[,2])
+predMG.Lv2Cobbs <- as.data.frame(cbind(MGpoints$Lat, MGpoints$Long, MG.Lv2Cobbs.predict))
+names(predMG.Lv2Cobbs) <- c("Y", "X", "predLv2Cobbs")
+
+###############################
+## Southern Site Predict ##
+##############################
+
+SS.Lv2Cobbs.rs.predict <- predict(SSLv2Cobbs.prune, SSpoints, type = c("vector"))
+SS.Lv2Cobbs.predict <- as.data.frame(SS.Lv2Cobbs.rs.predict[,2])
+predSS.Lv2Cobbs <- as.data.frame(cbind(SSpoints$Lat, SSpoints$Long, SS.Lv2Cobbs.predict))
+names(predSS.Lv2Cobbs) <- c("Y", "X", "predLv2Cobbs")
+
+
+#########################
+## Export to ASCII ##
+#########################
+
+pred.Lv2Cobbs1
+pred.Lv2Cobbs2
+pred.Lv2Cobbs3
+predHB.Lv2Cobbs
+predTB.Lv2Cobbs
+predMG.Lv2Cobbs
+predSS.Lv2Cobbs
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Lv2Outputs")
+
+# All Sites
+coordinates(pred.Lv2Cobbs1) <- ~X+Y
+ext <- extent(pred.Lv2Cobbs1)
+r <- raster(ext=ext,res=0.0000483000000031097)
+to_ascii <- rasterize(pred.Lv2Cobbs1, r, 'predLv2Cobbs')
+writeRaster(to_ascii,'AllLv2Cob1.asc', format='ascii')
+
+coordinates(pred.Lv2Cobbs2) <- ~X+Y
+ext2 <- extent(pred.Lv2Cobbs2)
+r2 <- raster(ext=ext2,res=0.0000483000000031097)
+to_ascii2 <- rasterize(pred.Lv2Cobbs2, r2, 'predLv2Cobbs')
+writeRaster(to_ascii2,'AllLv2Cob2.asc', format='ascii', overwrite = TRUE)
+
+coordinates(pred.Lv2Cobbs3) <- ~X+Y
+ext3 <- extent(pred.Lv2Cobbs3)
+r3 <- raster(ext=ext3,res=0.0000483000000031097)
+to_ascii3 <- rasterize(pred.Lv2Cobbs3, r3, 'predLv2Cobbs')
+writeRaster(to_ascii3,'AllLv2Cob3.asc', format='ascii')
+
+# Helby Banks
+coordinates(predHB.Lv2Cobbs) <- ~X+Y
+extHB <- extent(predHB.Lv2Cobbs)
+rHB <- raster(ext=extHB,res=0.0000483000000031097)
+to_asciiHB <- rasterize(predHB.Lv2Cobbs, rHB, 'predLv2Cobbs')
+writeRaster(to_asciiHB,'HBLv2Cob.asc', format='ascii')
+
+
+coordinates(predTB.Lv2Cobbs) <- ~X+Y
+extTB <- extent(predTB.Lv2Cobbs)
+rTB <- raster(ext=extTB,res=0.0000483000000031097)
+to_asciiTB <- rasterize(predTB.Lv2Cobbs, rTB, 'predLv2Cobbs')
+writeRaster(to_asciiTB,'TBLv2Cob.asc', format='ascii')
+
+coordinates(predMG.Lv2Cobbs) <- ~X+Y
+extMG <- extent(predMG.Lv2Cobbs)
+rMG <- raster(ext=extMG,res=0.0000483000000031097)
+to_asciiMG <- rasterize(predMG.Lv2Cobbs, rMG, 'predLv2Cobbs')
+writeRaster(to_asciiMG,'MGLv2Cob.asc', format='ascii')
+
+coordinates(predSS.Lv2Cobbs) <- ~X+Y
+extSS <- extent(predSS.Lv2Cobbs)
+rSS <- raster(ext=extSS,res=0.00004500000005447)
+to_asciiSS <- rasterize(predSS.Lv2Cobbs, rSS, 'predLv2Cobbs')
+writeRaster(to_asciiSS,'SSLv2Cob.asc', format='ascii')
+
+
+####################################################################
+## WRITE OUT.PREDICT files to CSV to use for ROC CALCULATIONS ##
+####################################################################
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/ROCtests")
+
+write.csv(out.predict.Lv2Cobbs, "7_OutPredict_All_Lv2Cobbs_5m.csv")
+write.csv(out.predict.HBLv2Cobbs, "8_OutPredict_HB_Lv2Cobbs_5m.csv")
+write.csv(out.predict.TBLv2Cobbs, "9_OutPredict_TB_Lv2Cobbs_5m.csv")
+write.csv(out.predict.MGLv2Cobbs, "10_OutPredict_MG_Lv2Cobbs_5m.csv")
+write.csv(out.predict.SSLv2Cobbs, "11_OutPredict_SS_Lv2Cobbs_5m.csv")
+
+```
+
+
+Do for Level 2 - Rock
+
+```{r}
+
+#####################################################
+#### Level 2 - ROCK ####
+#####################################################
+
+Lv2Rock.tree <- tree(as.factor(Lv2_Rock) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= model, na.action = na.exclude, method = "class")
+
+
+plot(Lv2Rock.tree); text(Lv2Rock.tree,cex=0.5)
+Lv2Rock.tree
+
+
+# Select the best model variables
+Lv2Rock.tree <- tree(as.factor(Lv2_Rock) ~ std3 + mean3 + BScatter + std25 + mean25 + Depth + BPI_B_250 +
+                       range25 + std5 + BPI_B_100 + BPI_B_50,
+                        data=model, method = "class")
+
+summary(Lv2Rock.tree) # MISCLASSIFICATION RATE 14.58%
+
+
+###############################################
+## Test at each site level individually ##
+###############################################
+
+#####################
+## Helby Banks ##
+#####################
+
+HBLv2Rock.tree <- tree(as.factor(Lv2_Rock) ~ Depth + BScatter + curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 + 
+                         mean10 + mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	
+                         range25 + hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	
+                         BPI_F_15 + BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250,
+                     data= HBmodel, na.action = na.exclude, method = "class")
+
+
+plot(HBLv2Rock.tree); text(HBLv2Rock.tree,cex=0.5)
+
+# Select the best model variables
+HBLv2Rock.tree <- tree(as.factor(Lv2_Rock) ~ rugosity  + mean25 + BScatter + std5 + range25 + mean5,
+                        data=HBmodel, method = "class")
+
+summary(HBLv2Rock.tree) # MISCLASSIFICATION RATE 10.5%
+
+
+
+####################
+## Tantabiddi ##
+####################
+
+TBLv2Rock.tree <- tree(as.factor(Lv2_Rock) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= TBmodel, na.action = na.exclude, method = "class")
+
+
+plot(TBLv2Rock.tree); text(TBLv2Rock.tree,cex=0.5)
+TBLv2Rock.tree
+
+# Select the best model variables
+TBLv2Rock.tree <- tree(as.factor(Lv2_Rock) ~ mean10 + mean3 + BPI_B_250 + std25 + std5 + range10 + hyp25 + range25 +
+                         BScatter,
+                        data=TBmodel, method = "class")
+
+summary(TBLv2Rock.tree) # MISCLASSIFICATION RATE 5.9%
+
+
+
+
+##################
+## Mangrove ##
+##################
+
+
+MGLv2Rock.tree <- tree(as.factor(Lv2_Rock) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= MGmodel, na.action = na.exclude, method = "class")
+
+
+plot(MGLv2Rock.tree); text(MGLv2Rock.tree,cex=0.5)
+
+
+# Select the best model variables
+MGLv2Rock.tree <- tree(as.factor(Lv2_Rock) ~ mean5 + rugosity + BPI_B_250 + hyp25 + BPI_B_50 + range25 + mean3 +
+                         mean10 + std25 + std5 + BScatter + BPI_B_100 + range10,
+                        data=MGmodel, method = "class")
+
+summary(MGLv2Rock.tree) # MISCLASSIFICATION RATE 3.4%
+
+
+
+
+####################
+## Southern Site ##
+####################
+
+SSLv2Rock.tree <- tree(as.factor(Lv2_Rock) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= SSmodel, na.action = na.exclude, method = "class")
+
+
+plot(SSLv2Rock.tree); text(SSLv2Rock.tree,cex=0.5)
+SSLv2Rock.tree
+
+# Select the best model variables
+SSLv2Rock.tree <- tree(as.factor(Lv2_Rock) ~ BPI_B_250 + range25 + mean25 + std25 + Depth + BPI_B_50 + std3 +
+                         BPI_B_100 + hyp5 + std5 + hyp3 + std10 + range10,
+                        data=SSmodel, method = "class")
+
+summary(SSLv2Rock.tree) # MISCLASSIFICATION RATE 2.7%
+
+
+
+########################################################
+## Investigating and Pruning the classification trees ##
+########################################################
+
+###################
+## All sites ##
+###################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        Lv2Rock.fit1  <- cv.tree(Lv2Rock.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(Lv2Rock.fit1)
+        summary(Lv2Rock.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        Lv2Rock.prune <- prune.misclass(Lv2Rock.tree, best = TreeSize) 
+        plot(Lv2Rock.prune); text(Lv2Rock.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(Lv2Rock.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+####
+Lv2Rock.prune <- prune.misclass(Lv2Rock.tree, best = 10)         # choose best tree size and add value in!!!
+plot(Lv2Rock.prune); text(Lv2Rock.prune,cex=0.8)
+summary(Lv2Rock.prune) # 14.58% misclassification
+
+Lv2Rock.predict <- predict(Lv2Rock.prune, test, type = c("vector"))
+Lv2Rock.predict <- as.data.frame(Lv2Rock.predict [,2])
+out.predict.Lv2Rock <- as.data.frame(cbind(test$Long, test$Lat, 
+   test$Lv2_Rock, Lv2Rock.predict))
+names(out.predict.Lv2Rock) <- c("X", "Y", "Lv2Rock.test", "Lv2Rock.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/All_Sites_Lv2Rock_prune.txt")
+Lv2Rock.prune 
+sink()
+
+
+###############################################
+## Test at each site level individually ##
+###############################################
+
+#####################
+## Helby Banks ##
+#####################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        HBLv2Rock.fit1  <- cv.tree(HBLv2Rock.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(HBLv2Rock.fit1)
+        summary(HBLv2Rock.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+graphics.off()
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        HBLv2Rock.prune <- prune.misclass(HBLv2Rock.tree, best = TreeSize) 
+        plot(HBLv2Rock.prune); text(HBLv2Rock.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(HBLv2Rock.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+graphics.off()
+
+####
+HBLv2Rock.prune <- prune.misclass(HBLv2Rock.tree, best = 8)         # choose best tree size and add value in!!!
+plot(HBLv2Rock.prune); text(HBLv2Rock.prune,cex=0.8)
+summary(HBLv2Rock.prune) # misclassification rate 8.8%
+
+HBLv2Rock.predict <- predict(HBLv2Rock.prune, HBtest, type = c("vector"))
+HBLv2Rock.predict <- as.data.frame(HBLv2Rock.predict [,2])
+out.predict.HBLv2Rock <- as.data.frame(cbind(HBtest$Long, HBtest$Lat, 
+   HBtest$Lv2_Rock, HBLv2Rock.predict))
+names(out.predict.HBLv2Rock) <- c("X", "Y", "Lv2Rock.test", "Lv2Rock.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/HB_Lv2Rock_prune.txt")
+HBLv2Rock.prune 
+sink()
+
+
+####################
+## Tantabiddi ##
+####################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        TBLv2Rock.fit1  <- cv.tree(TBLv2Rock.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(TBLv2Rock.fit1)
+        summary(TBLv2Rock.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+graphics.off()
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        TBLv2Rock.prune <- prune.misclass(TBLv2Rock.tree, best = TreeSize) 
+        plot(TBLv2Rock.prune); text(TBLv2Rock.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(TBLv2Rock.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+####
+TBLv2Rock.prune <- prune.misclass(TBLv2Rock.tree, best = 12)         # choose best tree size and add value in!!!
+plot(TBLv2Rock.prune); text(TBLv2Rock.prune,cex=0.8)
+summary(TBLv2Rock.prune) # misclassification rate 5.9%
+
+TBLv2Rock.predict <- predict(TBLv2Rock.prune, TBtest, type = c("vector"))
+TBLv2Rock.predict <- as.data.frame(TBLv2Rock.predict [,2])
+out.predict.TBLv2Rock <- as.data.frame(cbind(TBtest$Long, TBtest$Lat, 
+   TBtest$Lv2_Rock, TBLv2Rock.predict))
+names(out.predict.TBLv2Rock) <- c("X", "Y", "Lv2Rock.test", "Lv2Rock.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/TB_Lv2Rock_prune.txt")
+TBLv2Rock.prune 
+sink()
+
+
+
+##################
+## Mangrove ##
+##################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        MGLv2Rock.fit1  <- cv.tree(MGLv2Rock.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(MGLv2Rock.fit1)
+        summary(MGLv2Rock.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        MGLv2Rock.prune <- prune.misclass(MGLv2Rock.tree, best = TreeSize) 
+        plot(MGLv2Rock.prune); text(MGLv2Rock.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(MGLv2Rock.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+####
+MGLv2Rock.prune <- prune.misclass(MGLv2Rock.tree, best = 12)         # choose best tree size and add value in!!!
+plot(MGLv2Rock.prune); text(MGLv2Rock.prune,cex=0.8)
+summary(MGLv2Rock.prune) # misclassification rate 9.1%
+
+MGLv2Rock.predict <- predict(MGLv2Rock.prune, MGtest, type = c("vector"))
+MGLv2Rock.predict <- as.data.frame(MGLv2Rock.predict [,2])
+out.predict.MGLv2Rock <- as.data.frame(cbind(MGtest$Long, MGtest$Lat, 
+   MGtest$Lv2_Rock, MGLv2Rock.predict))
+names(out.predict.MGLv2Rock) <- c("X", "Y", "Lv2Rock.test", "Lv2Rock.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/MG_Lv2Rock_prune.txt")
+MGLv2Rock.prune 
+sink()
+
+
+###################
+## Southern Site ##
+####################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        SSLv2Rock.fit1  <- cv.tree(SSLv2Rock.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(SSLv2Rock.fit1)
+        summary(SSLv2Rock.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 8    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        SSLv2Rock.prune <- prune.misclass(SSLv2Rock.tree, best = TreeSize) 
+        plot(SSLv2Rock.prune); text(SSLv2Rock.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(SSLv2Rock.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+####
+SSLv2Rock.prune <- prune.misclass(SSLv2Rock.tree, best = 12)         # choose best tree size and add value in!!!
+plot(SSLv2Rock.prune); text(SSLv2Rock.prune,cex=0.8)
+summary(SSLv2Rock.prune) # misclassification rate 7.2%
+
+SSLv2Rock.predict <- predict(SSLv2Rock.prune, SStest, type = c("vector"))
+SSLv2Rock.predict <- as.data.frame(SSLv2Rock.predict [,2])
+out.predict.SSLv2Rock <- as.data.frame(cbind(SStest$Long, SStest$Lat, 
+   SStest$Lv2_Rock, SSLv2Rock.predict))
+names(out.predict.SSLv2Rock) <- c("X", "Y", "Lv2Rock.test", "Lv2Rock.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/SS_Lv2Rock_prune.txt")
+SSLv2Rock.prune 
+sink()
+
+
+
+###################################################
+## Predict Level 2 CATAMI Cobbles for each site ##
+###################################################
+
+
+#### pruned trees ####
+
+Lv2Rock.prune
+HBLv2Rock.prune
+TBLv2Rock.prune
+MGLv2Rock.prune
+SSLv2Rock.prune
+
+###################
+## ALL SITES ##
+###################
+
+
+Lv2Rock.rs.predict1 <- predict(Lv2Rock.prune, points1, type = c("vector"))
+Lv2Rock.predict1 <- as.data.frame(Lv2Rock.rs.predict1[,2])
+pred.Lv2Rock1 <- as.data.frame(cbind(points1$Long, points1$Lat,  Lv2Rock.predict1))
+names(pred.Lv2Rock1) <- c("X","Y", "predLv2Rock")
+
+Lv2Rock.rs.predict2 <- predict(Lv2Rock.prune, points2, type = c("vector"))
+Lv2Rock.predict2 <- as.data.frame(Lv2Rock.rs.predict2[,2])
+pred.Lv2Rock2 <- as.data.frame(cbind(points2$Long, points2$Lat,  Lv2Rock.predict2))
+names(pred.Lv2Rock2) <- c("X","Y", "predLv2Rock")
+
+Lv2Rock.rs.predict3 <- predict(Lv2Rock.prune, points3, type = c("vector"))
+Lv2Rock.predict3 <- as.data.frame(Lv2Rock.rs.predict3[,2])
+pred.Lv2Rock3 <- as.data.frame(cbind(points3$Long, points3$Lat,  Lv2Rock.predict3))
+names(pred.Lv2Rock3) <- c("X","Y", "predLv2Rock")
+
+
+#############################
+## Helby Banks Predict ##
+############################
+
+HB.Lv2Rock.rs.predict <- predict(HBLv2Rock.prune, HBpoints, type = c("vector"))
+HB.Lv2Rock.predict <- as.data.frame(HB.Lv2Rock.rs.predict[,2])
+predHB.Lv2Rock <- as.data.frame(cbind(HBpoints$Long, HBpoints$Lat,  HB.Lv2Rock.predict))
+names(predHB.Lv2Rock) <- c("X","Y", "predLv2Rock")
+
+
+###########################
+## Tantabiddi Predict ##
+###########################
+
+TB.Lv2Rock.rs.predict <- predict(TBLv2Rock.prune, TBpoints, type = c("vector"))
+TB.Lv2Rock.predict <- as.data.frame(TB.Lv2Rock.rs.predict[,2])
+predTB.Lv2Rock <- as.data.frame(cbind(TBpoints$Long, TBpoints$Lat,  TB.Lv2Rock.predict))
+names(predTB.Lv2Rock) <- c("X", "Y", "predLv2Rock")
+
+##########################
+## Mangrove Predict ##
+#########################
+
+MG.Lv2Rock.rs.predict <- predict(MGLv2Rock.prune, MGpoints, type = c("vector"))
+MG.Lv2Rock.predict <- as.data.frame(MG.Lv2Rock.rs.predict[,2])
+predMG.Lv2Rock <- as.data.frame(cbind(MGpoints$Lat, MGpoints$Long, MG.Lv2Rock.predict))
+names(predMG.Lv2Rock) <- c("Y", "X", "predLv2Rock")
+
+###############################
+## Southern Site Predict ##
+##############################
+
+SS.Lv2Rock.rs.predict <- predict(SSLv2Rock.prune, SSpoints, type = c("vector"))
+SS.Lv2Rock.predict <- as.data.frame(SS.Lv2Rock.rs.predict[,2])
+predSS.Lv2Rock <- as.data.frame(cbind(SSpoints$Lat, SSpoints$Long, SS.Lv2Rock.predict))
+names(predSS.Lv2Rock) <- c("Y", "X", "predLv2Rock")
+
+
+#########################
+## Export to ASCII ##
+#########################
+
+pred.Lv2Rock1
+pred.Lv2Rock2
+pred.Lv2Rock3
+predHB.Lv2Rock
+predTB.Lv2Rock
+predMG.Lv2Rock
+predSS.Lv2Rock
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Lv2Outputs")
+
+
+# All Sites
+coordinates(pred.Lv2Rock1) <- ~X+Y
+ext <- extent(pred.Lv2Rock1)
+r <- raster(ext=ext,res=0.0000483000000031097)
+to_ascii <- rasterize(pred.Lv2Rock1, r, 'predLv2Rock')
+writeRaster(to_ascii,'AllLv2Rock1.asc', format='ascii')
+
+coordinates(pred.Lv2Rock2) <- ~X+Y
+ext2 <- extent(pred.Lv2Rock2)
+r2 <- raster(ext=ext2,res=0.0000483000000031097)
+to_ascii2 <- rasterize(pred.Lv2Rock2, r2, 'predLv2Rock')
+writeRaster(to_ascii2,'AllLv2Rock2.asc', format='ascii', overwrite = TRUE)
+
+coordinates(pred.Lv2Rock3) <- ~X+Y
+ext3 <- extent(pred.Lv2Rock3)
+r3 <- raster(ext=ext3,res=0.0000483000000031097)
+to_ascii3 <- rasterize(pred.Lv2Rock3, r3, 'predLv2Rock')
+writeRaster(to_ascii3,'AllLv2Rock3.asc', format='ascii')
+
+# Helby Banks
+coordinates(predHB.Lv2Rock) <- ~X+Y
+extHB <- extent(predHB.Lv2Rock)
+rHB <- raster(ext=extHB,res=0.0000483000000031097)
+to_asciiHB <- rasterize(predHB.Lv2Rock, rHB, 'predLv2Rock')
+writeRaster(to_asciiHB,'HBLv2Rock.asc', format='ascii')
+
+
+coordinates(predTB.Lv2Rock) <- ~X+Y
+extTB <- extent(predTB.Lv2Rock)
+rTB <- raster(ext=extTB,res=0.0000483000000031097)
+to_asciiTB <- rasterize(predTB.Lv2Rock, rTB, 'predLv2Rock')
+writeRaster(to_asciiTB,'TBLv2Rock.asc', format='ascii')
+
+coordinates(predMG.Lv2Rock) <- ~X+Y
+extMG <- extent(predMG.Lv2Rock)
+rMG <- raster(ext=extMG,res=0.0000483000000031097)
+to_asciiMG <- rasterize(predMG.Lv2Rock, rMG, 'predLv2Rock')
+writeRaster(to_asciiMG,'MGLv2Rock.asc', format='ascii')
+
+coordinates(predSS.Lv2Rock) <- ~X+Y
+extSS <- extent(predSS.Lv2Rock)
+rSS <- raster(ext=extSS,res=0.00004500000005447)
+to_asciiSS <- rasterize(predSS.Lv2Rock, rSS, 'predLv2Rock')
+writeRaster(to_asciiSS,'SSLv2Rock.asc', format='ascii')
+
+
+####################################################################
+## WRITE OUT.PREDICT files to CSV to use for ROC CALCULATIONS ##
+####################################################################
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/ROCtests")
+
+write.csv(out.predict.Lv2Rock, "12_OutPredict_All_Lv2Rock_5m.csv")
+write.csv(out.predict.HBLv2Rock, "13_OutPredict_HB_Lv2Rock_5m.csv")
+write.csv(out.predict.TBLv2Rock, "14_OutPredict_TB_Lv2Rock_5m.csv")
+write.csv(out.predict.MGLv2Rock, "15_OutPredict_MG_Lv2Rock_5m.csv")
+write.csv(out.predict.SSLv2Rock, "16_OutPredict_SS_Lv2Rock_5m.csv")
+
+```
+
+
+Do for Level 2 - Pebble / gravel
+
+```{r}
+
+############################################
+#### Level 2 - PEBBLE / GRAVEL ####
+############################################
+
+Lv2PebGra.tree <- tree(as.factor(Lv2_Pebble_gravel) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= model, na.action = na.exclude, method = "class")
+
+
+plot(Lv2PebGra.tree); text(Lv2PebGra.tree,cex=0.5)
+
+
+# Select the best model variables
+Lv2PebGra.tree <- tree(as.factor(Lv2_Pebble_gravel) ~ Depth + BScatter + BPI_B_250 + range25 + std25 + std5 + mean25 +
+                         mean5 + BPI_B_100 + rugosity,
+                        data=model, method = "class")
+
+summary(Lv2PebGra.tree) # MISCLASSIFICATION RATE 5.8%
+
+
+###############################################
+## Test at each site level individually ##
+###############################################
+
+#####################
+## Helby Banks ##
+#####################
+
+HBLv2PebGra.tree <- tree(as.factor(Lv2_Pebble_gravel) ~ Depth + BScatter + curv +	curv_plan +	curv_prof +	slope +	mean3 +
+                           mean5 + mean10 + mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	
+                         range25 + hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	
+                         BPI_F_15 + BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250,
+                     data= HBmodel, na.action = na.exclude, method = "class")
+
+
+plot(HBLv2PebGra.tree); text(HBLv2PebGra.tree,cex=0.5)
+
+# Select the best model variables
+HBLv2PebGra.tree <- tree(as.factor(Lv2_Pebble_gravel) ~ mean10  + mean25 + BScatter + BPI_B_250 +
+                           std10 + hyp25 + BPI_B_50,
+                        data=HBmodel, method = "class")
+
+summary(HBLv2PebGra.tree) # MISCLASSIFICATION RATE 4.3%
+
+
+####################
+## Tantabiddi ##
+####################
+
+TBLv2PebGra.tree <- tree(as.factor(Lv2_Pebble_gravel) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= TBmodel, na.action = na.exclude, method = "class")
+
+
+plot(TBLv2PebGra.tree); text(TBLv2PebGra.tree,cex=0.5)
+
+
+# Select the best model variables
+TBLv2PebGra.tree <- tree(as.factor(Lv2_Pebble_gravel) ~ BScatter + BPI_B_250 + range25 + mean3 + BPI_B_100 + std25 +
+                           mean10 + mean25,
+                        data=TBmodel, method = "class")
+
+summary(TBLv2PebGra.tree) # MISCLASSIFICATION RATE 0.8%
+
+
+
+
+##################
+## Mangrove ##
+##################
+
+
+MGLv2PebGra.tree <- tree(as.factor(Lv2_Pebble_gravel) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= MGmodel, na.action = na.exclude, method = "class")
+
+
+plot(MGLv2PebGra.tree); text(MGLv2PebGra.tree,cex=0.5)
+MGLv2PebGra.tree
+
+# Select the best model variables
+MGLv2PebGra.tree <- tree(as.factor(Lv2_Pebble_gravel) ~ BPI_B_250 + range10 + mean5 + slope + BScatter + 
+                           range25 + range3 + north,
+                        data=MGmodel, method = "class")
+
+summary(MGLv2PebGra.tree) # MISCLASSIFICATION RATE 0.32%
+
+
+
+
+#######################
+## Southern Site ##
+######################
+
+SSLv2PebGra.tree <- tree(as.factor(Lv2_Pebble_gravel) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= SSmodel, na.action = na.exclude, method = "class")
+
+
+plot(SSLv2PebGra.tree); text(SSLv2PebGra.tree,cex=0.5)
+SSLv2PebGra.tree
+
+# Select the best model variables
+SSLv2PebGra.tree <- tree(as.factor(Lv2_Pebble_gravel) ~ range5 + mean3 + std10 + hyp25 + std3,
+                        data=SSmodel, method = "class")
+
+summary(SSLv2PebGra.tree) # MISCLASSIFICATION RATE 0.27%
+
+
+
+############################################################
+## Investigating and Pruning the classification trees ##
+############################################################
+
+###################
+## All sites ##
+###################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        Lv2PebGra.fit1  <- cv.tree(Lv2PebGra.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(Lv2PebGra.fit1)
+        summary(Lv2PebGra.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        Lv2PebGra.prune <- prune.misclass(Lv2PebGra.tree, best = TreeSize) 
+        plot(Lv2PebGra.prune); text(Lv2PebGra.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(Lv2PebGra.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+####
+Lv2PebGra.prune <- prune.misclass(Lv2PebGra.tree, best = 12)         # choose best tree size and add value in!!!
+plot(Lv2PebGra.prune); text(Lv2PebGra.prune,cex=0.8)
+summary(Lv2PebGra.prune) # 7.3% misclassification
+
+Lv2PebGra.predict <- predict(Lv2PebGra.prune, test, type = c("vector"))
+Lv2PebGra.predict <- as.data.frame(Lv2PebGra.predict [,2])
+out.predict.Lv2PebGra <- as.data.frame(cbind(test$Long, test$Lat, 
+   test$Lv2_Pebble_gravel, Lv2PebGra.predict))
+names(out.predict.Lv2PebGra) <- c("X", "Y", "Lv2PebGra.test", "Lv2PebGra.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/All_Sites_Lv2PebGra_prune.txt")
+Lv2PebGra.prune 
+sink()
+
+
+###############################################
+## Test at each site level individually ##
+###############################################
+
+#####################
+## Helby Banks ##
+#####################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        HBLv2PebGra.fit1  <- cv.tree(HBLv2PebGra.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(HBLv2PebGra.fit1)
+        summary(HBLv2PebGra.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 4    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        HBLv2PebGra.prune <- prune.misclass(HBLv2PebGra.tree, best = TreeSize) 
+        plot(HBLv2PebGra.prune); text(HBLv2PebGra.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(HBLv2PebGra.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+####
+HBLv2PebGra.prune <- prune.misclass(HBLv2PebGra.tree, best = 8)         # choose best tree size and add value in!!!
+plot(HBLv2PebGra.prune); text(HBLv2PebGra.prune,cex=0.8)
+summary(HBLv2PebGra.prune) # misclassification rate 4.3%
+
+HBLv2PebGra.predict <- predict(HBLv2PebGra.prune, HBtest, type = c("vector"))
+HBLv2PebGra.predict <- as.data.frame(HBLv2PebGra.predict [,2])
+out.predict.HBLv2PebGra <- as.data.frame(cbind(HBtest$Long, HBtest$Lat, 
+   HBtest$Lv2_Pebble_gravel, HBLv2PebGra.predict))
+names(out.predict.HBLv2PebGra) <- c("X", "Y", "Lv2PebGra.test", "Lv2PebGra.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/HB_Lv2PebGra_prune.txt")
+HBLv2PebGra.prune 
+sink()
+
+
+####################
+## Tantabiddi ##
+####################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        TBLv2PebGra.fit1  <- cv.tree(TBLv2PebGra.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(TBLv2PebGra.fit1)
+        summary(TBLv2PebGra.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        TBLv2PebGra.prune <- prune.misclass(TBLv2PebGra.tree, best = TreeSize) 
+        plot(TBLv2PebGra.prune); text(TBLv2PebGra.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(TBLv2PebGra.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+####
+TBLv2PebGra.prune <- prune.misclass(TBLv2PebGra.tree, best = 10)         # choose best tree size and add value in!!!
+plot(TBLv2PebGra.prune); text(TBLv2PebGra.prune,cex=0.8)
+summary(TBLv2PebGra.prune) # misclassification rate 2.6%
+
+TBLv2PebGra.predict <- predict(TBLv2PebGra.prune, TBtest, type = c("vector"))
+TBLv2PebGra.predict <- as.data.frame(TBLv2PebGra.predict [,2])
+out.predict.TBLv2PebGra <- as.data.frame(cbind(TBtest$Long, TBtest$Lat, 
+   TBtest$Lv2_Pebble_gravel, TBLv2PebGra.predict))
+names(out.predict.TBLv2PebGra) <- c("X", "Y", "Lv2PebGra.test", "Lv2PebGra.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/TB_Lv2PebGra_prune.txt")
+TBLv2PebGra.prune 
+sink()
+
+
+
+##################
+## Mangrove ##
+##################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        MGLv2PebGra.fit1  <- cv.tree(MGLv2PebGra.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(MGLv2PebGra.fit1)
+        summary(MGLv2PebGra.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 4    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        MGLv2PebGra.prune <- prune.misclass(MGLv2PebGra.tree, best = TreeSize) 
+        plot(MGLv2PebGra.prune); text(MGLv2PebGra.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(MGLv2PebGra.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+####
+MGLv2PebGra.prune <- prune.misclass(MGLv2PebGra.tree, best = 10)         # choose best tree size and add value in!!!
+plot(MGLv2PebGra.prune); text(MGLv2PebGra.prune,cex=0.8)
+summary(MGLv2PebGra.prune) # misclassification rate 0.3%
+
+MGLv2PebGra.predict <- predict(MGLv2PebGra.prune, MGtest, type = c("vector"))
+MGLv2PebGra.predict <- as.data.frame(MGLv2PebGra.predict [,2])
+out.predict.MGLv2PebGra <- as.data.frame(cbind(MGtest$Long, MGtest$Lat, 
+   MGtest$Lv2_Pebble_gravel, MGLv2PebGra.predict))
+names(out.predict.MGLv2PebGra) <- c("X", "Y", "Lv2PebGra.test", "Lv2PebGra.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/MG_Lv2PebGra_prune.txt")
+MGLv2PebGra.prune 
+sink()
+
+
+#######################
+## Southern Site ##
+######################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        SSLv2PebGra.fit1  <- cv.tree(SSLv2PebGra.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(SSLv2PebGra.fit1)
+        summary(SSLv2PebGra.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 2    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        SSLv2PebGra.prune <- prune.misclass(SSLv2PebGra.tree, best = TreeSize) 
+        plot(SSLv2PebGra.prune); text(SSLv2PebGra.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(SSLv2PebGra.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+####
+SSLv2PebGra.prune <- prune.misclass(SSLv2PebGra.tree, best = 6)         # choose best tree size and add value in!!!
+plot(SSLv2PebGra.prune); text(SSLv2PebGra.prune,cex=0.8)
+summary(SSLv2PebGra.prune) # misclassification rate 0.07%
+
+SSLv2PebGra.predict <- predict(SSLv2PebGra.prune, SStest, type = c("vector"))
+SSLv2PebGra.predict <- as.data.frame(SSLv2PebGra.predict [,2])
+out.predict.SSLv2PebGra <- as.data.frame(cbind(SStest$Long, SStest$Lat, 
+   SStest$Lv2_Pebble_gravel, SSLv2PebGra.predict))
+names(out.predict.SSLv2PebGra) <- c("X", "Y", "Lv2PebGra.test", "Lv2PebGra.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/SS_Lv2PebGra_prune.txt")
+SSLv2PebGra.prune 
+sink()
+
+
+
+#######################################################
+## Predict Level 2 CATAMI Cobbles for each site ##
+#######################################################
+
+
+## pruned trees ##
+
+Lv2PebGra.prune
+HBLv2PebGra.prune
+TBLv2PebGra.prune
+MGLv2PebGra.prune
+SSLv2PebGra.prune
+
+###################
+## ALL SITES ##
+###################
+
+
+Lv2PebGra.rs.predict1 <- predict(Lv2PebGra.prune, points1, type = c("vector"))
+Lv2PebGra.predict1 <- as.data.frame(Lv2PebGra.rs.predict1[,2])
+pred.Lv2PebGra1 <- as.data.frame(cbind(points1$Long, points1$Lat,  Lv2PebGra.predict1))
+names(pred.Lv2PebGra1) <- c("X","Y", "predLv2PebGra")
+
+Lv2PebGra.rs.predict2 <- predict(Lv2PebGra.prune, points2, type = c("vector"))
+Lv2PebGra.predict2 <- as.data.frame(Lv2PebGra.rs.predict2[,2])
+pred.Lv2PebGra2 <- as.data.frame(cbind(points2$Long, points2$Lat,  Lv2PebGra.predict2))
+names(pred.Lv2PebGra2) <- c("X","Y", "predLv2PebGra")
+
+Lv2PebGra.rs.predict3 <- predict(Lv2PebGra.prune, points3, type = c("vector"))
+Lv2PebGra.predict3 <- as.data.frame(Lv2PebGra.rs.predict3[,2])
+pred.Lv2PebGra3 <- as.data.frame(cbind(points3$Long, points3$Lat,  Lv2PebGra.predict3))
+names(pred.Lv2PebGra3) <- c("X","Y", "predLv2PebGra")
+
+
+#############################
+## Helby Banks Predict ##
+############################
+
+HB.Lv2PebGra.rs.predict <- predict(HBLv2PebGra.prune, HBpoints, type = c("vector"))
+HB.Lv2PebGra.predict <- as.data.frame(HB.Lv2PebGra.rs.predict[,2])
+predHB.Lv2PebGra <- as.data.frame(cbind(HBpoints$Long, HBpoints$Lat,  HB.Lv2PebGra.predict))
+names(predHB.Lv2PebGra) <- c("X","Y", "predLv2PebGra")
+
+
+###########################
+## Tantabiddi Predict ##
+###########################
+
+TB.Lv2PebGra.rs.predict <- predict(TBLv2PebGra.prune, TBpoints, type = c("vector"))
+TB.Lv2PebGra.predict <- as.data.frame(TB.Lv2PebGra.rs.predict[,2])
+predTB.Lv2PebGra <- as.data.frame(cbind(TBpoints$Long, TBpoints$Lat,  TB.Lv2PebGra.predict))
+names(predTB.Lv2PebGra) <- c("X", "Y", "predLv2PebGra")
+
+##########################
+## Mangrove Predict ##
+#########################
+
+MG.Lv2PebGra.rs.predict <- predict(MGLv2PebGra.prune, MGpoints, type = c("vector"))
+MG.Lv2PebGra.predict <- as.data.frame(MG.Lv2PebGra.rs.predict[,2])
+predMG.Lv2PebGra <- as.data.frame(cbind(MGpoints$Lat, MGpoints$Long, MG.Lv2PebGra.predict))
+names(predMG.Lv2PebGra) <- c("Y", "X", "predLv2PebGra")
+
+###############################
+## Southern Site Predict ##
+##############################
+
+SS.Lv2PebGra.rs.predict <- predict(SSLv2PebGra.prune, SSpoints, type = c("vector"))
+SS.Lv2PebGra.predict <- as.data.frame(SS.Lv2PebGra.rs.predict[,2])
+predSS.Lv2PebGra <- as.data.frame(cbind(SSpoints$Lat, SSpoints$Long, SS.Lv2PebGra.predict))
+names(predSS.Lv2PebGra) <- c("Y", "X", "predLv2PebGra")
+
+
+#########################
+## Export to ASCII ##
+#########################
+
+pred.Lv2PebGra1
+pred.Lv2PebGra2
+pred.Lv2PebGra3
+predHB.Lv2PebGra
+predTB.Lv2PebGra
+predMG.Lv2PebGra
+predSS.Lv2PebGra
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Lv2Outputs")
+
+
+# All Sites
+coordinates(pred.Lv2PebGra1) <- ~X+Y
+ext <- extent(pred.Lv2PebGra1)
+r <- raster(ext=ext,res=0.0000483000000031097)
+to_ascii <- rasterize(pred.Lv2PebGra1, r, 'predLv2PebGra')
+writeRaster(to_ascii,'AllLv2PebGr1.asc', format='ascii')
+
+coordinates(pred.Lv2PebGra2) <- ~X+Y
+ext2 <- extent(pred.Lv2PebGra2)
+r2 <- raster(ext=ext2,res=0.0000483000000031097)
+to_ascii2 <- rasterize(pred.Lv2PebGra2, r2, 'predLv2PebGra')
+writeRaster(to_ascii2,'AllLv2PebGr2.asc', format='ascii', overwrite = TRUE)
+
+coordinates(pred.Lv2PebGra3) <- ~X+Y
+ext3 <- extent(pred.Lv2PebGra3)
+r3 <- raster(ext=ext3,res=0.0000483000000031097)
+to_ascii3 <- rasterize(pred.Lv2PebGra3, r3, 'predLv2PebGra')
+writeRaster(to_ascii3,'AllLv2PebGr3.asc', format='ascii')
+
+# Helby Banks
+coordinates(predHB.Lv2PebGra) <- ~X+Y
+extHB <- extent(predHB.Lv2PebGra)
+rHB <- raster(ext=extHB,res=0.0000483000000031097)
+to_asciiHB <- rasterize(predHB.Lv2PebGra, rHB, 'predLv2PebGra')
+writeRaster(to_asciiHB,'HBLv2PebGr.asc', format='ascii')
+
+
+coordinates(predTB.Lv2PebGra) <- ~X+Y
+extTB <- extent(predTB.Lv2PebGra)
+rTB <- raster(ext=extTB,res=0.0000483000000031097)
+to_asciiTB <- rasterize(predTB.Lv2PebGra, rTB, 'predLv2PebGra')
+writeRaster(to_asciiTB,'TBLv2PebGr.asc', format='ascii')
+
+coordinates(predMG.Lv2PebGra) <- ~X+Y
+extMG <- extent(predMG.Lv2PebGra)
+rMG <- raster(ext=extMG,res=0.0000483000000031097)
+to_asciiMG <- rasterize(predMG.Lv2PebGra, rMG, 'predLv2PebGra')
+writeRaster(to_asciiMG,'MGLv2PebGr.asc', format='ascii')
+
+coordinates(predSS.Lv2PebGra) <- ~X+Y
+extSS <- extent(predSS.Lv2PebGra)
+rSS <- raster(ext=extSS,res=0.00004500000005447)
+to_asciiSS <- rasterize(predSS.Lv2PebGra, rSS, 'predLv2PebGra')
+writeRaster(to_asciiSS,'SSLv2PebGr.asc', format='ascii')
+
+
+####################################################################
+## WRITE OUT.PREDICT files to CSV to use for ROC CALCULATIONS ##
+####################################################################
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/ROCtests")
+
+write.csv(out.predict.Lv2PebGra, "17_OutPredict_All_Lv2PebGra_5m.csv")
+write.csv(out.predict.HBLv2PebGra, "18_OutPredict_HB_Lv2PebGra_5m.csv")
+write.csv(out.predict.TBLv2PebGra, "19_OutPredict_TB_Lv2PebGra_5m.csv")
+write.csv(out.predict.MGLv2PebGra, "20_OutPredict_MG_Lv2PebGra_5m.csv")
+write.csv(out.predict.SSLv2PebGra, "21_OutPredict_SS_Lv2PebGra_5m.csv")
+
+```
+
+
+
+Do for Level 2 - Sand / Mud
+
+```{r}
+
+#######################################
+#### Level 2 - SAND / MUD ####
+#######################################
+
+Lv2Sand.tree <- tree(as.factor(Lv2_Sand_mud) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= model, na.action = na.exclude, method = "class")
+
+plot(Lv2Sand.tree); text(Lv2Sand.tree,cex=0.5)
+
+
+
+# Select the best model variables
+Lv2Sand.tree <- tree(as.factor(Lv2_Sand_mud) ~ BScatter + range10 + std25 + mean25 + range25 + slope + BPI_B_250 +
+                       mean5,
+                        data=model, method = "class")
+
+summary(Lv2Sand.tree) # MISCLASSIFICATION RATE 16.39%
+
+
+###############################################
+## Test at each site level individually ##
+###############################################
+
+#####################
+## Helby Banks ##
+#####################
+
+HBLv2Sand.tree <- tree(as.factor(Lv2_Sand_mud) ~ Depth + BScatter + curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 + 
+                         mean10 + mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	
+                         range25 + hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	
+                         BPI_F_15 + BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250,
+                     data= HBmodel, na.action = na.exclude, method = "class")
+
+plot(HBLv2Sand.tree); text(HBLv2Sand.tree,cex=0.5)
+
+# Select the best model variables
+HBLv2Sand.tree <- tree(as.factor(Lv2_Sand_mud) ~ BScatter  + range5 + range25 + BPI_B_100 + BPI_B_250 + mean10 +
+                           std25 + mean25 + BPI_B_50,
+                        data=HBmodel, method = "class")
+
+summary(HBLv2Sand.tree) # MISCLASSIFICATION RATE 8.1%
+
+
+
+####################
+## Tantabiddi ##
+####################
+
+TBLv2Sand.tree <- tree(as.factor(Lv2_Sand_mud) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= TBmodel, na.action = na.exclude, method = "class")
+
+plot(TBLv2Sand.tree); text(TBLv2Sand.tree,cex=0.5)
+
+# Select the best model variables
+TBLv2Sand.tree <- tree(as.factor(Lv2_Sand_mud) ~ range25 + BScatter + BPI_B_250 + mean25 + BPI_B_100 + range10 +
+                         std25 + Depth,
+                        data=TBmodel, method = "class")
+
+summary(TBLv2Sand.tree) # MISCLASSIFICATION RATE 7.5%
+
+
+
+##################
+## Mangrove ##
+##################
+
+
+MGLv2Sand.tree <- tree(as.factor(Lv2_Sand_mud) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= MGmodel, na.action = na.exclude, method = "class")
+
+plot(MGLv2Sand.tree); text(MGLv2Sand.tree,cex=0.5)
+
+
+# Select the best model variables
+MGLv2Sand.tree <- tree(as.factor(Lv2_Sand_mud) ~ mean5 + BPI_B_100 + std25 + hyp25 + mean3 + BPI_B_250 + BScatter + range10 +
+                         std5,
+                        data=MGmodel, method = "class")
+
+summary(MGLv2Sand.tree) # MISCLASSIFICATION RATE 2.1%
+
+
+
+##################
+## Southern Site ##
+##################
+
+SSLv2Sand.tree <- tree(as.factor(Lv2_Sand_mud) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range3 +	range5 +	range10 +	range25 +
+                       hyp3 +	hyp5 +	hyp10 +	hyp25 +	rugosity +	east +	north +	BPI_F_10 +	BPI_F_15 +
+                       BPI_F_25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= SSmodel, na.action = na.exclude, method = "class")
+
+
+plot(SSLv2Sand.tree); text(SSLv2Sand.tree,cex=0.5)
+
+
+# Select the best model variables
+SSLv2Sand.tree <- tree(as.factor(Lv2_Sand_mud) ~ std10 + BPI_B_100 + curv + mean25 + range25 + BPI_B_50 +
+                         mean5 + BPI_F_10,
+                        data=SSmodel, method = "class")
+
+summary(SSLv2Sand.tree) # MISCLASSIFICATION RATE 0.46%
+
+
+
+
+############################################################
+## Investigating and Pruning the classification trees ##
+############################################################
+
+###################
+## All sites ##
+###################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        Lv2Sand.fit1  <- cv.tree(Lv2Sand.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(Lv2Sand.fit1)
+        summary(Lv2Sand.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        Lv2Sand.prune <- prune.misclass(Lv2Sand.tree, best = TreeSize) 
+        plot(Lv2Sand.prune); text(Lv2Sand.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(Lv2Sand.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+####
+Lv2Sand.prune <- prune.misclass(Lv2Sand.tree, best = 12)         # choose best tree size and add value in!!!
+plot(Lv2Sand.prune); text(Lv2Sand.prune,cex=0.8)
+summary(Lv2Sand.prune) # 16.3% misclassification
+
+Lv2Sand.predict <- predict(Lv2Sand.prune, test, type = c("vector"))
+Lv2Sand.predict <- as.data.frame(Lv2Sand.predict [,2])
+out.predict.Lv2Sand <- as.data.frame(cbind(test$Long, test$Lat, 
+   test$Lv2_Sand_mud, Lv2Sand.predict))
+names(out.predict.Lv2Sand) <- c("X", "Y", "Lv2Sand.test", "Lv2Sand.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/All_Sites_Lv2Sand_prune.txt")
+Lv2Sand.prune 
+sink()
+
+
+###############################################
+## Test at each site level individually ##
+###############################################
+
+#####################
+## Helby Banks ##
+#####################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        HBLv2Sand.fit1  <- cv.tree(HBLv2Sand.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(HBLv2Sand.fit1)
+        summary(HBLv2Sand.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        HBLv2Sand.prune <- prune.misclass(HBLv2Sand.tree, best = TreeSize) 
+        plot(HBLv2Sand.prune); text(HBLv2Sand.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(HBLv2Sand.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+####
+HBLv2Sand.prune <- prune.misclass(HBLv2Sand.tree, best = 12)         # choose best tree size and add value in!!!
+plot(HBLv2Sand.prune); text(HBLv2Sand.prune,cex=0.8)
+summary(HBLv2Sand.prune) # misclassification rate 8.9%
+
+HBLv2Sand.predict <- predict(HBLv2Sand.prune, HBtest, type = c("vector"))
+HBLv2Sand.predict <- as.data.frame(HBLv2Sand.predict [,2])
+out.predict.HBLv2Sand <- as.data.frame(cbind(HBtest$Long, HBtest$Lat, 
+   HBtest$Lv2_Sand_mud, HBLv2Sand.predict))
+names(out.predict.HBLv2Sand) <- c("X", "Y", "Lv2Sand.test", "Lv2Sand.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/HB_Lv2Sand_prune.txt")
+HBLv2Sand.prune 
+sink()
+
+
+####################
+## Tantabiddi ##
+####################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        TBLv2Sand.fit1  <- cv.tree(TBLv2Sand.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(TBLv2Sand.fit1)
+        summary(TBLv2Sand.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        TBLv2Sand.prune <- prune.misclass(TBLv2Sand.tree, best = TreeSize) 
+        plot(TBLv2Sand.prune); text(TBLv2Sand.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(TBLv2Sand.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+####
+TBLv2Sand.prune <- prune.misclass(TBLv2Sand.tree, best = 12)         # choose best tree size and add value in!!!
+plot(TBLv2Sand.prune); text(TBLv2Sand.prune,cex=0.8)
+summary(TBLv2Sand.prune) # misclassification rate 9.7%
+
+TBLv2Sand.predict <- predict(TBLv2Sand.prune, TBtest, type = c("vector"))
+TBLv2Sand.predict <- as.data.frame(TBLv2Sand.predict [,2])
+out.predict.TBLv2Sand <- as.data.frame(cbind(TBtest$Long, TBtest$Lat, 
+   TBtest$Lv2_Sand_mud, TBLv2Sand.predict))
+names(out.predict.TBLv2Sand) <- c("X", "Y", "Lv2Sand.test", "Lv2Sand.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/TB_Lv2Sand_prune.txt")
+TBLv2Sand.prune 
+sink()
+
+
+
+##################
+## Mangrove ##
+##################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        MGLv2Sand.fit1  <- cv.tree(MGLv2Sand.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(MGLv2Sand.fit1)
+        summary(MGLv2Sand.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+graphics.off()
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 4    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        MGLv2Sand.prune <- prune.misclass(MGLv2Sand.tree, best = TreeSize) 
+        plot(MGLv2Sand.prune); text(MGLv2Sand.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(MGLv2Sand.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+####
+MGLv2Sand.prune <- prune.misclass(MGLv2Sand.tree, best = 10)         # choose best tree size and add value in!!!
+plot(MGLv2Sand.prune); text(MGLv2Sand.prune,cex=0.8)
+summary(MGLv2Sand.prune) # misclassification rate 2.1%
+
+MGLv2Sand.predict <- predict(MGLv2Sand.prune, MGtest, type = c("vector"))
+MGLv2Sand.predict <- as.data.frame(MGLv2Sand.predict [,2])
+out.predict.MGLv2Sand <- as.data.frame(cbind(MGtest$Long, MGtest$Lat, 
+   MGtest$Lv2_Sand_mud, MGLv2Sand.predict))
+names(out.predict.MGLv2Sand) <- c("X", "Y", "Lv2Sand.test", "Lv2Sand.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/MG_Lv2Sand_prune.txt")
+MGLv2Sand.prune 
+sink()
+
+
+###################
+## Southern Site ##
+###################
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2columns - 4 per page
+for (i in 1:4) {                # repeats cross validation process to create 4 graphs of miscalssification
+        SSLv2Sand.fit1  <- cv.tree(SSLv2Sand.tree ,FUN = prune.misclass)  #default is 10 fold, k=10
+        plot(SSLv2Sand.fit1)
+        summary(SSLv2Sand.fit1)
+        }
+par(mfrow=c(1,1)) 
+
+#### pruning the tree based on visual inspection of misclassification rate plots using CV
+
+par(mfrow=c(2,2))               ## makes graphs appear in 2 rows and 2 columns - 4 per page
+TreeSize <- 6    ### enter the minimum tree size - will try 4 different sizes increasing size by 2 eata timme.
+for (i in 1:4) {                # repeats prune process to create 4 graphsof miscalssification
+        SSLv2Sand.prune <- prune.misclass(SSLv2Sand.tree, best = TreeSize) 
+        plot(SSLv2Sand.prune); text(SSLv2Sand.prune,cex=0.6,srt=0)
+        title(paste("Tree Size used for pruning =", TreeSize))
+        cat("\n\nTree Size based on Misclassification =", TreeSize) 
+        print(summary(SSLv2Sand.prune))          # prints summary of 4 versions of pruned tree
+        TreeSize = TreeSize + 2
+}
+par(mfrow=c(1,1))
+
+
+####
+SSLv2Sand.prune <- prune.misclass(SSLv2Sand.tree, best = 12)         # choose best tree size and add value in!!!
+plot(SSLv2Sand.prune); text(SSLv2Sand.prune,cex=0.8)
+summary(SSLv2Sand.prune) # misclassification rate 0.46%
+
+SSLv2Sand.predict <- predict(SSLv2Sand.prune, SStest, type = c("vector"))
+SSLv2Sand.predict <- as.data.frame(SSLv2Sand.predict [,2])
+out.predict.SSLv2Sand <- as.data.frame(cbind(SStest$Long, SStest$Lat, 
+   SStest$Lv2_Sand_mud, SSLv2Sand.predict))
+names(out.predict.SSLv2Sand) <- c("X", "Y", "Lv2Sand.test", "Lv2Sand.predicted")
+
+sink("C:/OneDrive/C3_Map/Model_Outputs/Figures/SS_Lv2Sand_prune.txt")
+SSLv2Sand.prune 
+sink()
+
+
+
+#######################################################
+## Predict Level 2 CATAMI Cobbles for each site ##
+#######################################################
+
+
+## pruned trees ##
+
+Lv2Sand.prune
+HBLv2Sand.prune
+TBLv2Sand.prune
+MGLv2Sand.prune
+SSLv2Sand.prune
+
+###################
+## ALL SITES ##
+###################
+
+
+Lv2Sand.rs.predict1 <- predict(Lv2Sand.prune, points1, type = c("vector"))
+Lv2Sand.predict1 <- as.data.frame(Lv2Sand.rs.predict1[,2])
+pred.Lv2Sand1 <- as.data.frame(cbind(points1$Long, points1$Lat,  Lv2Sand.predict1))
+names(pred.Lv2Sand1) <- c("X","Y", "predLv2Sand")
+
+Lv2Sand.rs.predict2 <- predict(Lv2Sand.prune, points2, type = c("vector"))
+Lv2Sand.predict2 <- as.data.frame(Lv2Sand.rs.predict2[,2])
+pred.Lv2Sand2 <- as.data.frame(cbind(points2$Long, points2$Lat,  Lv2Sand.predict2))
+names(pred.Lv2Sand2) <- c("X","Y", "predLv2Sand")
+
+Lv2Sand.rs.predict3 <- predict(Lv2Sand.prune, points3, type = c("vector"))
+Lv2Sand.predict3 <- as.data.frame(Lv2Sand.rs.predict3[,2])
+pred.Lv2Sand3 <- as.data.frame(cbind(points3$Long, points3$Lat,  Lv2Sand.predict3))
+names(pred.Lv2Sand3) <- c("X","Y", "predLv2Sand")
+
+
+#############################
+## Helby Banks Predict ##
+############################
+
+HB.Lv2Sand.rs.predict <- predict(HBLv2Sand.prune, HBpoints, type = c("vector"))
+HB.Lv2Sand.predict <- as.data.frame(HB.Lv2Sand.rs.predict[,2])
+predHB.Lv2Sand <- as.data.frame(cbind(HBpoints$Long, HBpoints$Lat,  HB.Lv2Sand.predict))
+names(predHB.Lv2Sand) <- c("X","Y", "predLv2Sand")
+
+
+###########################
+## Tantabiddi Predict ##
+###########################
+
+TB.Lv2Sand.rs.predict <- predict(TBLv2Sand.prune, TBpoints, type = c("vector"))
+TB.Lv2Sand.predict <- as.data.frame(TB.Lv2Sand.rs.predict[,2])
+predTB.Lv2Sand <- as.data.frame(cbind(TBpoints$Long, TBpoints$Lat,  TB.Lv2Sand.predict))
+names(predTB.Lv2Sand) <- c("X", "Y", "predLv2Sand")
+
+##########################
+## Mangrove Predict ##
+#########################
+
+MG.Lv2Sand.rs.predict <- predict(MGLv2Sand.prune, MGpoints, type = c("vector"))
+MG.Lv2Sand.predict <- as.data.frame(MG.Lv2Sand.rs.predict[,2])
+predMG.Lv2Sand <- as.data.frame(cbind(MGpoints$Lat, MGpoints$Long, MG.Lv2Sand.predict))
+names(predMG.Lv2Sand) <- c("Y", "X", "predLv2Sand")
+
+###############################
+## Southern Site Predict ##
+##############################
+
+SS.Lv2Sand.rs.predict <- predict(SSLv2Sand.prune, SSpoints, type = c("vector"))
+SS.Lv2Sand.predict <- as.data.frame(SS.Lv2Sand.rs.predict[,2])
+predSS.Lv2Sand <- as.data.frame(cbind(SSpoints$Lat, SSpoints$Long, SS.Lv2Sand.predict))
+names(predSS.Lv2Sand) <- c("Y", "X", "predLv2Sand")
+
+
+#########################
+## Export to ASCII ##
+#########################
+
+pred.Lv2Sand1
+pred.Lv2Sand2
+pred.Lv2Sand3
+predHB.Lv2Sand
+predTB.Lv2Sand
+predMG.Lv2Sand
+predSS.Lv2Sand
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/Lv2Outputs")
+
+
+# All Sites
+coordinates(pred.Lv2Sand1) <- ~X+Y
+ext <- extent(pred.Lv2Sand1)
+r <- raster(ext=ext,res=0.0000483000000031097)
+to_ascii <- rasterize(pred.Lv2Sand1, r, 'predLv2Sand')
+writeRaster(to_ascii,'AllLv2Snd1.asc', format='ascii')
+
+coordinates(pred.Lv2Sand2) <- ~X+Y
+ext2 <- extent(pred.Lv2Sand2)
+r2 <- raster(ext=ext2,res=0.0000483000000031097)
+to_ascii2 <- rasterize(pred.Lv2Sand2, r2, 'predLv2Sand')
+writeRaster(to_ascii2,'AllLv2Snd2.asc', format='ascii', overwrite = TRUE)
+
+coordinates(pred.Lv2Sand3) <- ~X+Y
+ext3 <- extent(pred.Lv2Sand3)
+r3 <- raster(ext=ext3,res=0.0000483000000031097)
+to_ascii3 <- rasterize(pred.Lv2Sand3, r3, 'predLv2Sand')
+writeRaster(to_ascii3,'AllLv2Snd3.asc', format='ascii')
+
+# Helby Banks
+coordinates(predHB.Lv2Sand) <- ~X+Y
+extHB <- extent(predHB.Lv2Sand)
+rHB <- raster(ext=extHB,res=0.0000483000000031097)
+to_asciiHB <- rasterize(predHB.Lv2Sand, rHB, 'predLv2Sand')
+writeRaster(to_asciiHB,'HBLv2Snd.asc', format='ascii')
+
+
+coordinates(predTB.Lv2Sand) <- ~X+Y
+extTB <- extent(predTB.Lv2Sand)
+rTB <- raster(ext=extTB,res=0.0000483000000031097)
+to_asciiTB <- rasterize(predTB.Lv2Sand, rTB, 'predLv2Sand')
+writeRaster(to_asciiTB,'TBLv2Snd.asc', format='ascii')
+
+coordinates(predMG.Lv2Sand) <- ~X+Y
+extMG <- extent(predMG.Lv2Sand)
+rMG <- raster(ext=extMG,res=0.0000483000000031097)
+to_asciiMG <- rasterize(predMG.Lv2Sand, rMG, 'predLv2Sand')
+writeRaster(to_asciiMG,'MGLv2Snd.asc', format='ascii')
+
+coordinates(predSS.Lv2Sand) <- ~X+Y
+extSS <- extent(predSS.Lv2Sand)
+rSS <- raster(ext=extSS,res=0.00004500000005447)
+to_asciiSS <- rasterize(predSS.Lv2Sand, rSS, 'predLv2Sand')
+writeRaster(to_asciiSS,'SSLv2Snd.asc', format='ascii')
+
+
+####################################################################
+## WRITE OUT.PREDICT files to CSV to use for ROC CALCULATIONS ##
+####################################################################
+
+setwd("C:/OneDrive/C3_Map/Model_Outputs/ROCtests")
+
+write.csv(out.predict.Lv2Sand, "22_OutPredict_All_Lv2Sand_5m.csv")
+write.csv(out.predict.HBLv2Sand, "23_OutPredict_HB_Lv2Sand_5m.csv")
+write.csv(out.predict.TBLv2Sand, "24_OutPredict_TB_Lv2Sand_5m.csv")
+write.csv(out.predict.MGLv2Sand, "25_OutPredict_MG_Lv2Sand_5m.csv")
+write.csv(out.predict.SSLv2Sand, "26_OutPredict_SS_Lv2Sand_5m.csv")
+
+```

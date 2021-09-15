@@ -1,0 +1,1115 @@
+---
+title: "RandomForest"
+author: "Joe Turner"
+date: "24 April 2017"
+output: pdf_document
+---
+
+```{r}
+
+library(rpart)
+library(tree)
+library(randomForest)
+library(e1071)
+library(plyr)
+library(vegan)
+library(doBy)
+library(rgdal)
+library(clustsig)
+library(gdata)
+library(ggplot2)
+library(scales)
+library(ggrepel)
+library(RColorBrewer)
+library(reshape2)
+library(reshape)
+library(grid)
+library(dplR)
+library(gridExtra)
+library(Hmisc)
+library(corrplot)
+library(PerformanceAnalytics)
+library(raster)
+library(gmodels)
+st.err <- function(x) {sd(x)/sqrt(length(x))}
+
+setwd("C:/OneDrive/C3_Map")
+GT <- read.csv("14_GIS_GT_Intercept_5m_9999_Removed_L3EDIT.csv", header = TRUE)
+Helby <- read.csv("15_HelbyBanks_GT_5m_L3EDIT.csv", header = TRUE)
+Tanta <- read.csv("16_Tantabiddi_GT_5m_L3EDIT.csv", header = TRUE)
+Mgrove <- read.csv("17_Mangrove_GT_5m_L3EDIT.csv", header = TRUE)
+South <- read.csv("18_SouthSite_GT_5m_L3EDIT.csv", header = TRUE)
+
+setwd("C:/OneDrive/C3_Map/PointsForPrediction")
+
+HBpoints <- read.csv("Helby_Predict_5m.csv", header = TRUE)
+TBpoints <- read.csv("Tanta_Predict_5m.csv", header = TRUE)
+MGpoints <- read.csv("Mangrove_Predict_5m.csv", header = TRUE)
+SSpoints <- read.csv("South_Predict_5m.csv", header = TRUE)
+points1 <- read.csv("AllSites_Predict_5m_1.csv", header = TRUE)
+points2 <- read.csv("AllSites_Predict_5m_2.csv", header = TRUE)
+points3 <- read.csv("AllSites_Predict_5m_3.csv", header = TRUE)
+
+
+```
+
+
+```{r select training and evaluation data}
+
+set.seed(387)  
+
+# For all data
+size.modeldata <- round(0.75 * nrow(GT))
+model  <- GT[sample ( 1:nrow(GT), size.modeldata, replace = FALSE),]
+test <- GT[- c( sample ( 1:nrow(GT), size.modeldata, replace = FALSE) ),]
+
+# For Helby Banks
+HBsize.modeldata <- round(0.75 * nrow(Helby))
+HBmodel  <- Helby[sample ( 1:nrow(Helby), HBsize.modeldata, replace = FALSE),]
+HBtest <- Helby[- c( sample ( 1:nrow(Helby), HBsize.modeldata, replace = FALSE) ),]
+
+# For Tantabiddi
+TBsize.modeldata <- round(0.75 * nrow(Tanta))
+TBmodel  <- Tanta[sample ( 1:nrow(Tanta), TBsize.modeldata, replace = FALSE),]
+TBtest <- Tanta[- c( sample ( 1:nrow(Tanta), TBsize.modeldata, replace = FALSE) ),]
+
+# For Mangrove
+MGsize.modeldata <- round(0.75 * nrow(Mgrove))
+MGmodel  <- Mgrove[sample ( 1:nrow(Mgrove), MGsize.modeldata, replace = FALSE),]
+MGtest <- Mgrove[- c( sample ( 1:nrow(Mgrove), MGsize.modeldata, replace = FALSE) ),]
+
+# For Southern Site
+SSsize.modeldata <- round(0.75 * nrow(South))
+SSmodel  <- South[sample ( 1:nrow(South), SSsize.modeldata, replace = FALSE),]
+SStest <- South[- c( sample ( 1:nrow(South), SSsize.modeldata, replace = FALSE) ),]
+
+
+```
+
+
+```{r RANDOM FOREST}
+
+##########################
+#### LEVEL 1 HABITATS ####
+##########################
+
+
+#################
+## HELBY BANKS ##
+#################
+
+HB_L1_Hab.randomForest <- randomForest(as.factor(L1_Hab) ~ curv_plan +	curv_prof +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std25 +	range5 +	range25 + hyp10 +	hyp25 +	east +	north + Depth + BScatter,
+                     data= HBmodel, 
+                     na.action = na.exclude, 
+                     importance = TRUE, 
+                     proximity = TRUE,
+                     ntree = 2500,
+                     nodesize = 1)
+
+print(HB_L1_Hab.randomForest)
+print(importance(HB_L1_Hab.randomForest,type = 1))
+plot(HB_L1_Hab.randomForest)
+importance(HB_L1_Hab.randomForest)
+
+sink("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures/HB_L1_Hab.txt")
+HB_L1_Hab.randomForest 
+sink()
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures")
+png(file = 'HB_L1_Hab_VarImpPlot.png', width = 8, height = 8, units = 'in', res = 300)
+varImpPlot(HB_L1_Hab.randomForest,
+           sort = T,
+           main="Variable Importance")
+dev.off()
+
+HB_L1_HabPredImport <- as.data.frame(sort(importance(HB_L1_Hab.randomForest)[,4], decreasing = TRUE))
+names(HB_L1_HabPredImport) <- c("MeanDecreaseGini")
+write.table(HB_L1_HabPredImport, file = "HB_L1_Hab_predictor_importance.txt",
+            append = FALSE, sep = "\t", eol = "\n", na = "NA", dec = ".", row.names = TRUE,
+            col.names = TRUE, qmethod = c("escape", "double"))
+
+true.type = as.factor(HBtest[,13])
+predicted = predict(HB_L1_Hab.randomForest, HBtest,type="class")
+table(true.type,predicted)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/BER")
+write.csv(table(true.type,predicted), "4_RF_HB_Lv1_MisclassMatrix.csv")
+
+# need to edit, look at http://trevorstephens.com/kaggle-titanic-tutorial/r-part-5-random-forests/
+PredictionHB_L1_Hab <- predict(HB_L1_Hab.randomForest, HBtest)
+submitHB_L1_Hab <- data.frame(HabType = HBtest$L1_Hab, PredictedL1_Hab = PredictionHB_L1_Hab, X = HBtest$Lat, Y = HBtest$Long)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/ROCtests")
+write.csv(submitHB_L1_Hab, file = "HB_L1_Habrandomforest.csv", row.names = FALSE)
+
+
+#############
+## PREDICT ##
+############
+
+HB_L1_Hab.rF.predict <- predict(HB_L1_Hab.randomForest, HBpoints)
+HB_L1_Hab.predict <- as.data.frame(HB_L1_Hab.rF.predict)
+pred.HB_L1_Hab <- as.data.frame(cbind(HBpoints$Long, HBpoints$Lat, HB_L1_Hab.predict))
+pred.HB_L1_Hab$HB_L1_Hab.rF.predict <- as.numeric(as.character(pred.HB_L1_Hab$HB_L1_Hab.rF.predict))
+names(pred.HB_L1_Hab) <- c("X","Y", "predHB_L1_Hab")
+
+
+############
+## OUTPUT ##
+############
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Lv1Outputs")
+
+coordinates(pred.HB_L1_Hab) <- ~X+Y
+extHB <- extent(pred.HB_L1_Hab)
+table(diff(pred.HB_L1_Hab@coords[,1]))
+rHB <- raster(ext=extHB,res=0.0000483000000031097)
+to_asciiHB <- rasterize(pred.HB_L1_Hab, rHB, 'predHB_L1_Hab')
+writeRaster(to_asciiHB,'HB_L1_HabRF.asc', format='ascii', overwrite =TRUE)
+
+
+
+
+
+
+#################
+## Tantabiddi  ##
+#################
+
+TB_L1_Hab.randomForest <- randomForest(as.factor(L1_Hab) ~ mean3 +	mean5 +	mean10 + mean25 +	std5 +	std10 +	std25 +	
+                                         range5 +	range10 +	range25 + hyp10 +	hyp25 +	BPI_B_250 +	Depth + BScatter,
+                     data= TBmodel, 
+                     na.action = na.exclude, 
+                     importance = TRUE, 
+                     proximity = TRUE,
+                     ntree = 2500,
+                     nodesize = 1)
+
+print(TB_L1_Hab.randomForest)
+print(importance(TB_L1_Hab.randomForest,type = 2))
+plot(TB_L1_Hab.randomForest)
+importance(TB_L1_Hab.randomForest)
+
+sink("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures/TB_L1_Hab.txt")
+TB_L1_Hab.randomForest 
+sink()
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures")
+png(file = 'TB_L1_Hab_VarImpPlot.png', width = 8, height = 8, units = 'in', res = 300)
+varImpPlot(TB_L1_Hab.randomForest,
+           sort = T,
+           main="Variable Importance")
+dev.off()
+
+TB_L1_HabPredImport <- as.data.frame(sort(importance(TB_L1_Hab.randomForest)[,4], decreasing = TRUE))
+names(TB_L1_HabPredImport) <- c("MeanDecreaseGini")
+write.table(TB_L1_HabPredImport, file = "TB_L1_Hab_predictor_importance.txt",
+            append = FALSE, sep = "\t", eol = "\n", na = "NA", dec = ".", row.names = TRUE,
+            col.names = TRUE, qmethod = c("escape", "double"))
+
+true.type = as.factor(TBtest[,13])
+predicted = predict(TB_L1_Hab.randomForest, TBtest,type="class")
+table(true.type,predicted)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/BER")
+write.csv(table(true.type,predicted), "5_RF_TB_Lv1_MisclassMatrix.csv")
+
+# need to edit, look at http://trevorstephens.com/kaggle-titanic-tutorial/r-part-5-random-forests/
+PredictionTB_L1_Hab <- predict(TB_L1_Hab.randomForest, TBtest)
+submitTB_L1_Hab <- data.frame(HabType = TBtest$L1_Hab, PredictedL1_Hab = PredictionTB_L1_Hab, X = TBtest$Lat, Y = TBtest$Long)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/ROCtests")
+write.csv(submitTB_L1_Hab, file = "TB_L1_Habrandomforest.csv", row.names = FALSE)
+
+
+#############
+## PREDICT ##
+############
+
+TB_L1_Hab.rF.predict <- predict(TB_L1_Hab.randomForest, TBpoints)
+TB_L1_Hab.predict <- as.data.frame(TB_L1_Hab.rF.predict)
+pred.TB_L1_Hab <- as.data.frame(cbind(TBpoints$Long, TBpoints$Lat, TB_L1_Hab.predict))
+pred.TB_L1_Hab$TB_L1_Hab.rF.predict <- as.numeric(as.character(pred.TB_L1_Hab$TB_L1_Hab.rF.predict))
+names(pred.TB_L1_Hab) <- c("X","Y", "predTB_L1_Hab")
+
+
+############
+## OUTPUT ##
+############
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Lv1Outputs")
+
+coordinates(pred.TB_L1_Hab) <- ~X+Y
+extTB <- extent(pred.TB_L1_Hab)
+table(diff(pred.TB_L1_Hab@coords[,1]))
+rTB <- raster(ext=extTB,res=0.0000483000000031097)
+to_asciiTB <- rasterize(pred.TB_L1_Hab, rTB, 'predTB_L1_Hab')
+writeRaster(to_asciiTB,'TB_L1_HabRF.asc', format='ascii', overwrite =TRUE)
+
+
+
+
+##############
+## Mangrove ##
+##############
+
+MG_L1_Hab.randomForest <- randomForest(as.factor(L1_Hab) ~ slope +	mean5 +	mean10 + std25 +	range5 +	range10 +
+                       hyp10 +	hyp25 +	rugosity +	east + BPI_B_250 + BScatter,
+                     data= MGmodel, 
+                     na.action = na.exclude, 
+                     importance = TRUE, 
+                     proximity = TRUE,
+                     ntree = 2500,
+                     nodesize = 1)
+
+print(MG_L1_Hab.randomForest)
+print(importance(MG_L1_Hab.randomForest,type = 2))
+plot(MG_L1_Hab.randomForest)
+importance(MG_L1_Hab.randomForest)
+
+sink("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures/MG_L1_Hab.txt")
+MG_L1_Hab.randomForest 
+sink()
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures")
+png(file = 'MG_L1_Hab_VarImpPlot.png', width = 8, height = 8, units = 'in', res = 300)
+varImpPlot(MG_L1_Hab.randomForest,
+           sort = T,
+           main="Variable Importance")
+dev.off()
+
+MG_L1_HabPredImport <- as.data.frame(sort(importance(MG_L1_Hab.randomForest)[,4], decreasing = TRUE))
+names(MG_L1_HabPredImport) <- c("MeanDecreaseGini")
+write.table(MG_L1_HabPredImport, file = "MG_L1_Hab_predictor_importance.txt",
+            append = FALSE, sep = "\t", eol = "\n", na = "NA", dec = ".", row.names = TRUE,
+            col.names = TRUE, qmethod = c("escape", "double"))
+
+true.type = as.factor(MGtest[,13])
+predicted = predict(MG_L1_Hab.randomForest, MGtest,type="class")
+table(true.type,predicted)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/BER")
+write.csv(table(true.type,predicted), "6_RF_MG_Lv1_MisclassMatrix.csv")
+
+# need to edit, look at http://trevorstephens.com/kaggle-titanic-tutorial/r-part-5-random-forests/
+PredictionMG_L1_Hab <- predict(MG_L1_Hab.randomForest, MGtest)
+submitMG_L1_Hab <- data.frame(HabType = MGtest$L1_Hab, PredictedL1_Hab = PredictionMG_L1_Hab, X = MGtest$Lat, Y = MGtest$Long)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/ROCtests")
+write.csv(submitMG_L1_Hab, file = "MG_L1_Habrandomforest.csv", row.names = FALSE)
+
+
+#############
+## PREDICT ##
+############
+
+MG_L1_Hab.rF.predict <- predict(MG_L1_Hab.randomForest, MGpoints)
+MG_L1_Hab.predict <- as.data.frame(MG_L1_Hab.rF.predict)
+pred.MG_L1_Hab <- as.data.frame(cbind(MGpoints$Long, MGpoints$Lat, MG_L1_Hab.predict))
+pred.MG_L1_Hab$MG_L1_Hab.rF.predict <- as.numeric(as.character(pred.MG_L1_Hab$MG_L1_Hab.rF.predict))
+names(pred.MG_L1_Hab) <- c("X","Y", "predMG_L1_Hab")
+
+
+############
+## OUTPUT ##
+############
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Lv1Outputs")
+
+coordinates(pred.MG_L1_Hab) <- ~X+Y
+extMG <- extent(pred.MG_L1_Hab)
+table(diff(pred.MG_L1_Hab@coords[,1]))
+rMG <- raster(ext=extMG,res=0.0000483000000031097)
+to_asciiMG <- rasterize(pred.MG_L1_Hab, rMG, 'predMG_L1_Hab')
+writeRaster(to_asciiMG,'MG_L1_HabRF.asc', format='ascii', overwrite =TRUE)
+
+
+
+###################
+## Southern Site ##
+###################
+
+SS_L1_Hab.randomForest <- randomForest(as.factor(L1_Hab) ~ BPI_B_250 +	range25 + mean25 + BPI_B_50 + std25 + mean10 +
+                                       Depth + mean3 + mean5 + std10 + hyp10 + rugosity + BScatter,
+                     data= SSmodel, 
+                     na.action = na.exclude, 
+                     importance = TRUE, 
+                     proximity = TRUE,
+                     ntree = 2500,
+                     nodesize = 1)
+
+print(SS_L1_Hab.randomForest)
+print(importance(SS_L1_Hab.randomForest,type = 2))
+plot(SS_L1_Hab.randomForest)
+importance(SS_L1_Hab.randomForest)
+
+sink("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures/SS_L1_Hab.txt")
+SS_L1_Hab.randomForest 
+sink()
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures")
+png(file = 'SS_L1_Hab_VarImpPlot.png', width = 8, height = 8, units = 'in', res = 300)
+varImpPlot(SS_L1_Hab.randomForest,
+           sort = T,
+           main="Variable Importance")
+dev.off()
+
+SS_L1_HabPredImport <- as.data.frame(sort(importance(SS_L1_Hab.randomForest)[,3], decreasing = TRUE))
+names(SS_L1_HabPredImport) <- c("MeanDecreaseAccuracy")
+write.table(SS_L1_HabPredImport, file = "SS_L1_Hab_predictor_importanceACCURACY.txt",
+            append = FALSE, sep = "\t", eol = "\n", na = "NA", dec = ".", row.names = TRUE,
+            col.names = TRUE, qmethod = c("escape", "double"))
+
+true.type = as.factor(SStest[,13])
+predicted = predict(SS_L1_Hab.randomForest, SStest,type="class")
+table(true.type,predicted)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/BER")
+write.csv(table(true.type,predicted), "7_RF_SS_Lv1_MisclassMatrix.csv")
+
+# need to edit, look at http://trevorstephens.com/kaggle-titanic-tutorial/r-part-5-random-forests/
+PredictionSS_L1_Hab <- predict(SS_L1_Hab.randomForest, SStest)
+submitSS_L1_Hab <- data.frame(HabType = SStest$L1_Hab, PredictedL1_Hab = PredictionSS_L1_Hab, X = SStest$Lat, Y = SStest$Long)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/ROCtests")
+write.csv(submitSS_L1_Hab, file = "SS_L1_Habrandomforest.csv", row.names = FALSE)
+
+
+#############
+## PREDICT ##
+############
+
+SS_L1_Hab.rF.predict <- predict(SS_L1_Hab.randomForest, SSpoints)
+SS_L1_Hab.predict <- as.data.frame(SS_L1_Hab.rF.predict)
+pred.SS_L1_Hab <- as.data.frame(cbind(SSpoints$Long, SSpoints$Lat, SS_L1_Hab.predict))
+pred.SS_L1_Hab$SS_L1_Hab.rF.predict <- as.numeric(as.character(pred.SS_L1_Hab$SS_L1_Hab.rF.predict))
+names(pred.SS_L1_Hab) <- c("X","Y", "predSS_L1_Hab")
+
+
+############
+## OUTPUT ##
+############
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Lv1Outputs")
+
+coordinates(pred.SS_L1_Hab) <- ~X+Y
+extSS <- extent(pred.SS_L1_Hab)
+rSS <- raster(ext=extSS,res=0.000048500000005447)
+to_asciiSS <- rasterize(pred.SS_L1_Hab, rSS, 'predSS_L1_Hab')
+writeRaster(to_asciiSS,'SS_L1_HabRF.asc', format='ascii', overwrite =TRUE)
+
+
+
+########################
+### Helpful websites ###
+########################
+ 
+# http://www.statmethods.net/advstats/cart.html
+# http://dni-institute.in/blogs/random-forest-using-r-step-by-step-tutorial/
+ 
+
+```
+
+
+
+
+
+
+```{r RANDOM FOREST}
+
+##########################
+#### LEVEL 2 HABITATS ####
+##########################
+
+
+#################
+## HELBY BANKS ##
+#################
+
+HB_L2_Hab.randomForest <- randomForest(as.factor(L2_Hab) ~ curv +	curv_plan +	curv_prof +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std25 +	range25 + hyp3 +	hyp5 +	hyp10 +	hyp25 +	east +	north + 
+                         BPI_B_250 +	Depth + BScatter,
+                     data= HBmodel, 
+                     na.action = na.exclude, 
+                     importance = TRUE, 
+                     proximity = TRUE,
+                     ntree = 2500,
+                     nodesize = 1)
+
+print(HB_L2_Hab.randomForest)
+print(importance(HB_L2_Hab.randomForest,type = 2))
+plot(HB_L2_Hab.randomForest)
+importance(HB_L2_Hab.randomForest)
+
+sink("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures/HB_L2_Hab.txt")
+HB_L2_Hab.randomForest 
+sink()
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures")
+png(file = 'HB_L2_Hab_VarImpPlot.png', width = 8, height = 8, units = 'in', res = 300)
+varImpPlot(HB_L2_Hab.randomForest,
+           sort = T,
+           main="Variable Importance")
+dev.off()
+
+HB_L2_HabPredImport <- as.data.frame(sort(importance(HB_L2_Hab.randomForest)[,4], decreasing = TRUE))
+names(HB_L2_HabPredImport) <- c("MeanDecreaseGini")
+write.table(HB_L2_HabPredImport, file = "HB_L2_Hab_predictor_importance.txt",
+            append = FALSE, sep = "\t", eol = "\n", na = "NA", dec = ".", row.names = TRUE,
+            col.names = TRUE, qmethod = c("escape", "double"))
+
+true.type = as.factor(HBtest[,14])
+predicted = predict(HB_L2_Hab.randomForest, HBtest,type="class")
+table(true.type,predicted)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/BER")
+write.csv(table(true.type,predicted), "8_RF_HB_Lv2_MisclassMatrix.csv")
+
+# need to edit, look at http://trevorstephens.com/kaggle-titanic-tutorial/r-part-5-random-forests/
+PredictionHB_L2_Hab <- predict(HB_L2_Hab.randomForest, HBtest)
+submitHB_L2_Hab <- data.frame(HabType = HBtest$L2_Hab, PredictedL2_Hab = PredictionHB_L2_Hab, X = HBtest$Lat, Y = HBtest$Long)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/ROCtests")
+write.csv(submitHB_L2_Hab, file = "HB_L2_Habrandomforest.csv", row.names = FALSE)
+
+
+#############
+## PREDICT ##
+############
+
+HB_L2_Hab.rF.predict <- predict(HB_L2_Hab.randomForest, HBpoints)
+HB_L2_Hab.predict <- as.data.frame(HB_L2_Hab.rF.predict)
+pred.HB_L2_Hab <- as.data.frame(cbind(HBpoints$Long, HBpoints$Lat, HB_L2_Hab.predict))
+pred.HB_L2_Hab$HB_L2_Hab.rF.predict <- as.numeric(as.character(pred.HB_L2_Hab$HB_L2_Hab.rF.predict))
+names(pred.HB_L2_Hab) <- c("X","Y", "predHB_L2_Hab")
+
+
+############
+## OUTPUT ##
+############
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Lv2Outputs")
+
+coordinates(pred.HB_L2_Hab) <- ~X+Y
+extHB <- extent(pred.HB_L2_Hab)
+rHB <- raster(ext=extHB,res=0.0000483000000031097)
+to_asciiHB <- rasterize(pred.HB_L2_Hab, rHB, 'predHB_L2_Hab')
+writeRaster(to_asciiHB,'HB_L2_HabRF.asc', format='ascii', overwrite =TRUE)
+
+
+
+
+
+
+#################
+## Tantabiddi  ##
+#################
+
+TB_L2_Hab.randomForest <- randomForest(as.factor(L2_Hab) ~ slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range5 +	range10 +	range25 +
+                       hyp10 +	hyp25 +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= TBmodel, 
+                     na.action = na.exclude, 
+                     importance = TRUE, 
+                     proximity = TRUE,
+                     ntree = 2500,
+                     nodesize = 1)
+
+print(TB_L2_Hab.randomForest)
+print(importance(TB_L2_Hab.randomForest,type = 2))
+plot(TB_L2_Hab.randomForest)
+importance(TB_L2_Hab.randomForest)
+
+sink("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures/TB_L2_Hab.txt")
+TB_L2_Hab.randomForest 
+sink()
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures")
+png(file = 'TB_L2_Hab_VarImpPlot.png', width = 8, height = 8, units = 'in', res = 300)
+varImpPlot(TB_L2_Hab.randomForest,
+           sort = T,
+           main="Variable Importance")
+dev.off()
+
+TB_L2_HabPredImport <- as.data.frame(sort(importance(TB_L2_Hab.randomForest)[,4], decreasing = TRUE))
+names(TB_L2_HabPredImport) <- c("MeanDecreaseGini")
+write.table(TB_L2_HabPredImport, file = "TB_L2_Hab_predictor_importance.txt",
+            append = FALSE, sep = "\t", eol = "\n", na = "NA", dec = ".", row.names = TRUE,
+            col.names = TRUE, qmethod = c("escape", "double"))
+
+true.type = as.factor(TBtest[,14])
+predicted = predict(TB_L2_Hab.randomForest, TBtest,type="class")
+table(true.type,predicted)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/BER")
+write.csv(table(true.type,predicted), "9_RF_TB_Lv2_MisclassMatrix.csv")
+
+# need to edit, look at http://trevorstephens.com/kaggle-titanic-tutorial/r-part-5-random-forests/
+PredictionTB_L2_Hab <- predict(TB_L2_Hab.randomForest, TBtest)
+submitTB_L2_Hab <- data.frame(HabType = TBtest$L2_Hab, PredictedL2_Hab = PredictionTB_L2_Hab, X = TBtest$Lat, Y = TBtest$Long)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/ROCtests")
+write.csv(submitTB_L2_Hab, file = "TB_L2_Habrandomforest.csv", row.names = FALSE)
+
+
+#############
+## PREDICT ##
+############
+
+TB_L2_Hab.rF.predict <- predict(TB_L2_Hab.randomForest, TBpoints)
+TB_L2_Hab.predict <- as.data.frame(TB_L2_Hab.rF.predict)
+pred.TB_L2_Hab <- as.data.frame(cbind(TBpoints$Long, TBpoints$Lat, TB_L2_Hab.predict))
+pred.TB_L2_Hab$TB_L2_Hab.rF.predict <- as.numeric(as.character(pred.TB_L2_Hab$TB_L2_Hab.rF.predict))
+names(pred.TB_L2_Hab) <- c("X","Y", "predTB_L2_Hab")
+
+
+############
+## OUTPUT ##
+############
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Lv2Outputs")
+
+coordinates(pred.TB_L2_Hab) <- ~X+Y
+extTB <- extent(pred.TB_L2_Hab)
+rTB <- raster(ext=extTB,res=0.0000483000000031097)
+to_asciiTB <- rasterize(pred.TB_L2_Hab, rTB, 'predTB_L2_Hab')
+writeRaster(to_asciiTB,'TB_L2_HabRF.asc', format='ascii', overwrite =TRUE)
+
+
+
+
+##############
+## Mangrove ##
+##############
+
+MG_L2_Hab.randomForest <- randomForest(as.factor(L2_Hab) ~ slope +	mean3 +	mean5 +	mean10 + mean25 +	std3 +	std5 +	
+                                         std25 +	range10 +	range25 + hyp10 +	hyp25 +	rugosity + BPI_B_50 +	
+                                         BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= MGmodel, 
+                     na.action = na.exclude, 
+                     importance = TRUE, 
+                     proximity = TRUE,
+                     ntree = 2500,
+                     nodesize = 1)
+
+print(MG_L2_Hab.randomForest)
+print(importance(MG_L2_Hab.randomForest,type = 2))
+plot(MG_L2_Hab.randomForest)
+importance(MG_L2_Hab.randomForest)
+
+sink("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures/MG_L2_Hab.txt")
+MG_L2_Hab.randomForest 
+sink()
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures")
+png(file = 'MG_L2_Hab_VarImpPlot.png', width = 8, height = 8, units = 'in', res = 300)
+varImpPlot(MG_L2_Hab.randomForest,
+           sort = T,
+           main="Variable Importance")
+dev.off()
+
+MG_L2_HabPredImport <- as.data.frame(sort(importance(MG_L2_Hab.randomForest)[,4], decreasing = TRUE))
+names(MG_L2_HabPredImport) <- c("MeanDecreaseGini")
+write.table(MG_L2_HabPredImport, file = "MG_L2_Hab_predictor_importance.txt",
+            append = FALSE, sep = "\t", eol = "\n", na = "NA", dec = ".", row.names = TRUE,
+            col.names = TRUE, qmethod = c("escape", "double"))
+
+true.type = as.factor(MGtest[,14])
+predicted = predict(MG_L2_Hab.randomForest, MGtest,type="class")
+table(true.type,predicted)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/BER")
+write.csv(table(true.type,predicted), "10_RF_MG_Lv2_MisclassMatrix.csv")
+
+# need to edit, look at http://trevorstephens.com/kaggle-titanic-tutorial/r-part-5-random-forests/
+PredictionMG_L2_Hab <- predict(MG_L2_Hab.randomForest, MGtest)
+submitMG_L2_Hab <- data.frame(HabType = MGtest$L2_Hab, PredictedL2_Hab = PredictionMG_L2_Hab, X = MGtest$Lat, Y = MGtest$Long)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/ROCtests")
+write.csv(submitMG_L2_Hab, file = "MG_L2_Habrandomforest.csv", row.names = FALSE)
+
+
+#############
+## PREDICT ##
+############
+
+MG_L2_Hab.rF.predict <- predict(MG_L2_Hab.randomForest, MGpoints)
+MG_L2_Hab.predict <- as.data.frame(MG_L2_Hab.rF.predict)
+pred.MG_L2_Hab <- as.data.frame(cbind(MGpoints$Long, MGpoints$Lat, MG_L2_Hab.predict))
+pred.MG_L2_Hab$MG_L2_Hab.rF.predict <- as.numeric(as.character(pred.MG_L2_Hab$MG_L2_Hab.rF.predict))
+names(pred.MG_L2_Hab) <- c("X","Y", "predMG_L2_Hab")
+
+
+############
+## OUTPUT ##
+############
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Lv2Outputs")
+
+coordinates(pred.MG_L2_Hab) <- ~X+Y
+extMG <- extent(pred.MG_L2_Hab)
+rMG <- raster(ext=extMG,res=0.0000483000000031097)
+to_asciiMG <- rasterize(pred.MG_L2_Hab, rMG, 'predMG_L2_Hab')
+writeRaster(to_asciiMG,'MG_L2_HabRF.asc', format='ascii', overwrite =TRUE)
+
+
+
+###################
+## Southern Site ##
+###################
+
+SS_L2_Hab.randomForest <- randomForest(as.factor(L2_Hab) ~ range25 + BPI_B_250 + mean25 + mean10 + std25 + BPI_B_50 + 
+                                         Depth + BPI_B_100 + mean5 + mean3 + hyp25 + range10 + range5 + BScatter,
+                     data= SSmodel, 
+                     na.action = na.exclude, 
+                     importance = TRUE, 
+                     proximity = TRUE,
+                     ntree = 2500,
+                     nodesize = 1)
+
+print(SS_L2_Hab.randomForest)
+print(importance(SS_L2_Hab.randomForest,type = 2))
+plot(SS_L2_Hab.randomForest)
+importance(SS_L2_Hab.randomForest)
+
+sink("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures/SS_L2_Hab.txt")
+SS_L2_Hab.randomForest 
+sink()
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures")
+png(file = 'SS_L2_Hab_VarImpPlot.png', width = 8, height = 8, units = 'in', res = 300)
+varImpPlot(SS_L2_Hab.randomForest,
+           sort = T,
+           main="Variable Importance")
+dev.off()
+
+SS_L2_HabPredImport <- as.data.frame(sort(importance(SS_L2_Hab.randomForest)[,4], decreasing = TRUE))
+names(SS_L2_HabPredImport) <- c("MeanDecreaseGini")
+write.table(SS_L2_HabPredImport, file = "SS_L2_Hab_predictor_importance.txt",
+            append = FALSE, sep = "\t", eol = "\n", na = "NA", dec = ".", row.names = TRUE,
+            col.names = TRUE, qmethod = c("escape", "double"))
+
+true.type = as.factor(SStest[,14])
+predicted = predict(SS_L2_Hab.randomForest, SStest,type="class")
+table(true.type,predicted)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/BER")
+write.csv(table(true.type,predicted), "11_RF_SS_Lv1_MisclassMatrix.csv")
+
+# need to edit, look at http://trevorstephens.com/kaggle-titanic-tutorial/r-part-5-random-forests/
+PredictionSS_L2_Hab <- predict(SS_L2_Hab.randomForest, SStest)
+submitSS_L2_Hab <- data.frame(HabType = SStest$L2_Hab, PredictedL2_Hab = PredictionSS_L2_Hab, X = SStest$Lat, Y = SStest$Long)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/ROCtests")
+write.csv(submitSS_L2_Hab, file = "SS_L2_Habrandomforest.csv", row.names = FALSE)
+
+
+#############
+## PREDICT ##
+############
+
+SS_L2_Hab.rF.predict <- predict(SS_L2_Hab.randomForest, SSpoints)
+SS_L2_Hab.predict <- as.data.frame(SS_L2_Hab.rF.predict)
+pred.SS_L2_Hab <- as.data.frame(cbind(SSpoints$Long, SSpoints$Lat, SS_L2_Hab.predict))
+pred.SS_L2_Hab$SS_L2_Hab.rF.predict <- as.numeric(as.character(pred.SS_L2_Hab$SS_L2_Hab.rF.predict))
+names(pred.SS_L2_Hab) <- c("X","Y", "predSS_L2_Hab")
+
+
+############
+## OUTPUT ##
+############
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Lv2Outputs")
+
+coordinates(pred.SS_L2_Hab) <- ~X+Y
+extSS <- extent(pred.SS_L2_Hab)
+rSS <- raster(ext=extSS,res=0.000048500000005447)
+to_asciiSS <- rasterize(pred.SS_L2_Hab, rSS, 'predSS_L2_Hab')
+writeRaster(to_asciiSS,'SS_L2_HabRF.asc', format='ascii', overwrite =TRUE)
+
+
+
+
+
+
+########################
+### Helpful websites ###
+########################
+ 
+# http://www.statmethods.net/advstats/cart.html
+# http://dni-institute.in/blogs/random-forest-using-r-step-by-step-tutorial/
+ 
+
+```
+
+
+
+
+
+
+
+```{r RANDOM FOREST}
+
+###############################
+#### LEVEL 3 EDIT HABITATS ####
+###############################
+
+
+#################
+## HELBY BANKS ##
+#################
+
+HB_L3_Hab_EDIT.randomForest <- randomForest(as.factor(L3_Hab_EDIT) ~ curv +	curv_plan +	curv_prof +	slope +	mean3 +	mean5 +	
+                                              mean10 + mean25 +	std10 +	std25 + range10 +	range25 + hyp3 +	hyp5 +	hyp10 +	
+                                              hyp25 +	rugosity +	east +	north +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= HBmodel, 
+                     na.action = na.exclude, 
+                     importance = TRUE, 
+                     proximity = TRUE,
+                     ntree = 2500,
+                     nodesize = 1)
+
+print(HB_L3_Hab_EDIT.randomForest)
+print(importance(HB_L3_Hab_EDIT.randomForest,type = 2))
+plot(HB_L3_Hab_EDIT.randomForest)
+importance(HB_L3_Hab_EDIT.randomForest)
+
+sink("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures/HB_L3_Hab_EDIT.txt")
+HB_L3_Hab_EDIT.randomForest 
+sink()
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures")
+png(file = 'HB_L3_Hab_EDIT_VarImpPlot.png', width = 8, height = 8, units = 'in', res = 300)
+varImpPlot(HB_L3_Hab_EDIT.randomForest,
+           sort = T,
+           main="Variable Importance")
+dev.off()
+
+HB_L3_Hab_EDITPredImport <- as.data.frame(sort(importance(HB_L3_Hab_EDIT.randomForest)[,4], decreasing = TRUE))
+names(HB_L3_Hab_EDITPredImport) <- c("MeanDecreaseGini")
+write.table(HB_L3_Hab_EDITPredImport, file = "HB_L3_Hab_EDIT_predictor_importance.txt",
+            append = FALSE, sep = "\t", eol = "\n", na = "NA", dec = ".", row.names = TRUE,
+            col.names = TRUE, qmethod = c("escape", "double"))
+
+true.type = as.factor(HBtest[,16])
+predicted = predict(HB_L3_Hab_EDIT.randomForest, HBtest,type="class")
+table(true.type,predicted)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/BER")
+write.csv(table(true.type,predicted), "17_RF_HB_Lv3_EDIT_MisclassMatrix.csv")
+
+# need to edit, look at http://trevorstephens.com/kaggle-titanic-tutorial/r-part-5-random-forests/
+PredictionHB_L3_Hab_EDIT <- predict(HB_L3_Hab_EDIT.randomForest, HBtest)
+submitHB_L3_Hab_EDIT <- data.frame(HabType = HBtest$L3_Hab_EDIT, PredictedL3_Hab_EDIT = PredictionHB_L3_Hab_EDIT, X = HBtest$Lat, Y = HBtest$Long)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/ROCtests")
+write.csv(submitHB_L3_Hab_EDIT, file = "HB_L3_Hab_EDITrandomforest.csv", row.names = FALSE)
+
+
+#############
+## PREDICT ##
+############
+
+HB_L3_Hab_EDIT.rF.predict <- predict(HB_L3_Hab_EDIT.randomForest, HBpoints)
+HB_L3_Hab_EDIT.predict <- as.data.frame(HB_L3_Hab_EDIT.rF.predict)
+pred.HB_L3_Hab_EDIT <- as.data.frame(cbind(HBpoints$Long, HBpoints$Lat, HB_L3_Hab_EDIT.predict))
+pred.HB_L3_Hab_EDIT$HB_L3_Hab_EDIT.rF.predict <- as.numeric(as.character(pred.HB_L3_Hab_EDIT$HB_L3_Hab_EDIT.rF.predict))
+names(pred.HB_L3_Hab_EDIT) <- c("X","Y", "predHB_L3_Hab_EDIT")
+
+
+############
+## OUTPUT ##
+############
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Lv3EDITOutputs")
+
+coordinates(pred.HB_L3_Hab_EDIT) <- ~X+Y
+extHB <- extent(pred.HB_L3_Hab_EDIT)
+rHB <- raster(ext=extHB,res=0.0000483000000031097)
+to_asciiHB <- rasterize(pred.HB_L3_Hab_EDIT, rHB, 'predHB_L3_Hab_EDIT')
+writeRaster(to_asciiHB,'HB_L3_Hab_EDITRF.asc', format='ascii', overwrite =TRUE)
+
+
+
+
+
+
+#################
+## Tantabiddi  ##
+#################
+
+TB_L3_Hab_EDIT.randomForest <- randomForest(as.factor(L3_Hab_EDIT) ~ mean3 +	mean5 +	mean10 + mean25 +	std5 +	std10 +	
+                                              std25 +	range10 +	range25 + hyp10 +	hyp25 +		BPI_B_100 +	BPI_B_250 +	
+                                              Depth + BScatter,
+                     data= TBmodel, 
+                     na.action = na.exclude, 
+                     importance = TRUE, 
+                     proximity = TRUE,
+                     ntree = 2500,
+                     nodesize = 1)
+
+print(TB_L3_Hab_EDIT.randomForest)
+print(importance(TB_L3_Hab_EDIT.randomForest,type = 2))
+plot(TB_L3_Hab_EDIT.randomForest)
+importance(TB_L3_Hab_EDIT.randomForest)
+
+sink("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures/TB_L3_Hab_EDIT.txt")
+TB_L3_Hab_EDIT.randomForest 
+sink()
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures")
+png(file = 'TB_L3_Hab_EDIT_VarImpPlot.png', width = 8, height = 8, units = 'in', res = 300)
+varImpPlot(TB_L3_Hab_EDIT.randomForest,
+           sort = T,
+           main="Variable Importance")
+dev.off()
+
+TB_L3_Hab_EDITPredImport <- as.data.frame(sort(importance(TB_L3_Hab_EDIT.randomForest)[,4], decreasing = TRUE))
+names(TB_L3_Hab_EDITPredImport) <- c("MeanDecreaseGini")
+write.table(TB_L3_Hab_EDITPredImport, file = "TB_L3_Hab_EDIT_predictor_importance.txt",
+            append = FALSE, sep = "\t", eol = "\n", na = "NA", dec = ".", row.names = TRUE,
+            col.names = TRUE, qmethod = c("escape", "double"))
+
+true.type = as.factor(TBtest[,16])
+predicted = predict(TB_L3_Hab_EDIT.randomForest, TBtest,type="class")
+table(true.type,predicted)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/BER")
+write.csv(table(true.type,predicted), "18_RF_TB_Lv3_EDIT_MisclassMatrix.csv")
+
+# need to edit, look at http://trevorstephens.com/kaggle-titanic-tutorial/r-part-5-random-forests/
+PredictionTB_L3_Hab_EDIT <- predict(TB_L3_Hab_EDIT.randomForest, TBtest)
+submitTB_L3_Hab_EDIT <- data.frame(HabType = TBtest$L3_Hab_EDIT, PredictedL3_Hab_EDIT = PredictionTB_L3_Hab_EDIT, X = TBtest$Lat, Y = TBtest$Long)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/ROCtests")
+write.csv(submitTB_L3_Hab_EDIT, file = "TB_L3_Hab_EDITrandomforest.csv", row.names = FALSE)
+
+
+#############
+## PREDICT ##
+############
+
+TB_L3_Hab_EDIT.rF.predict <- predict(TB_L3_Hab_EDIT.randomForest, TBpoints)
+TB_L3_Hab_EDIT.predict <- as.data.frame(TB_L3_Hab_EDIT.rF.predict)
+pred.TB_L3_Hab_EDIT <- as.data.frame(cbind(TBpoints$Long, TBpoints$Lat, TB_L3_Hab_EDIT.predict))
+pred.TB_L3_Hab_EDIT$TB_L3_Hab_EDIT.rF.predict <- as.numeric(as.character(pred.TB_L3_Hab_EDIT$TB_L3_Hab_EDIT.rF.predict))
+names(pred.TB_L3_Hab_EDIT) <- c("X","Y", "predTB_L3_Hab_EDIT")
+
+
+############
+## OUTPUT ##
+############
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Lv3EDITOutputs")
+
+coordinates(pred.TB_L3_Hab_EDIT) <- ~X+Y
+extTB <- extent(pred.TB_L3_Hab_EDIT)
+rTB <- raster(ext=extTB,res=0.0000483000000031097)
+to_asciiTB <- rasterize(pred.TB_L3_Hab_EDIT, rTB, 'predTB_L3_Hab_EDIT')
+writeRaster(to_asciiTB,'TB_L3_Hab_EDITRF.asc', format='ascii', overwrite =TRUE)
+
+
+
+
+##############
+## Mangrove ##
+##############
+
+MG_L3_Hab_EDIT.randomForest <- randomForest(as.factor(L3_Hab_EDIT) ~ mean3 +	mean5 +	mean10 + mean25 +	std25 +	range5 +
+                                              range25 + hyp5 +	hyp10 +	hyp25 + BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= MGmodel, 
+                     na.action = na.exclude, 
+                     importance = TRUE, 
+                     proximity = TRUE,
+                     ntree = 2500,
+                     nodesize = 1)
+
+print(MG_L3_Hab_EDIT.randomForest)
+print(importance(MG_L3_Hab_EDIT.randomForest,type = 2))
+plot(MG_L3_Hab_EDIT.randomForest)
+importance(MG_L3_Hab_EDIT.randomForest)
+
+sink("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures/MG_L3_Hab_EDIT.txt")
+MG_L3_Hab_EDIT.randomForest 
+sink()
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures")
+png(file = 'MG_L3_Hab_EDIT_VarImpPlot.png', width = 8, height = 8, units = 'in', res = 300)
+varImpPlot(MG_L3_Hab_EDIT.randomForest,
+           sort = T,
+           main="Variable Importance")
+dev.off()
+
+MG_L3_Hab_EDITPredImport <- as.data.frame(sort(importance(MG_L3_Hab_EDIT.randomForest)[,4], decreasing = TRUE))
+names(MG_L3_Hab_EDITPredImport) <- c("MeanDecreaseGini")
+write.table(MG_L3_Hab_EDITPredImport, file = "MG_L3_Hab_EDIT_predictor_importance.txt",
+            append = FALSE, sep = "\t", eol = "\n", na = "NA", dec = ".", row.names = TRUE,
+            col.names = TRUE, qmethod = c("escape", "double"))
+
+true.type = as.factor(MGtest[,16])
+predicted = predict(MG_L3_Hab_EDIT.randomForest, MGtest,type="class")
+table(true.type,predicted)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/BER")
+write.csv(table(true.type,predicted), "19_RF_MG_Lv3_EDIT_MisclassMatrix.csv")
+
+# need to edit, look at http://trevorstephens.com/kaggle-titanic-tutorial/r-part-5-random-forests/
+PredictionMG_L3_Hab_EDIT <- predict(MG_L3_Hab_EDIT.randomForest, MGtest)
+submitMG_L3_Hab_EDIT <- data.frame(HabType = MGtest$L3_Hab_EDIT, PredictedL3_Hab_EDIT = PredictionMG_L3_Hab_EDIT, X = MGtest$Lat, Y = MGtest$Long)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/ROCtests")
+write.csv(submitMG_L3_Hab_EDIT, file = "MG_L3_Hab_EDITrandomforest.csv", row.names = FALSE)
+
+
+#############
+## PREDICT ##
+############
+
+MG_L3_Hab_EDIT.rF.predict <- predict(MG_L3_Hab_EDIT.randomForest, MGpoints)
+MG_L3_Hab_EDIT.predict <- as.data.frame(MG_L3_Hab_EDIT.rF.predict)
+pred.MG_L3_Hab_EDIT <- as.data.frame(cbind(MGpoints$Long, MGpoints$Lat, MG_L3_Hab_EDIT.predict))
+pred.MG_L3_Hab_EDIT$MG_L3_Hab_EDIT.rF.predict <- as.numeric(as.character(pred.MG_L3_Hab_EDIT$MG_L3_Hab_EDIT.rF.predict))
+names(pred.MG_L3_Hab_EDIT) <- c("X","Y", "predMG_L3_Hab_EDIT")
+
+
+############
+## OUTPUT ##
+############
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Lv3EDITOutputs")
+
+coordinates(pred.MG_L3_Hab_EDIT) <- ~X+Y
+extMG <- extent(pred.MG_L3_Hab_EDIT)
+rMG <- raster(ext=extMG,res=0.0000483000000031097)
+to_asciiMG <- rasterize(pred.MG_L3_Hab_EDIT, rMG, 'predMG_L3_Hab_EDIT')
+writeRaster(to_asciiMG,'MG_L3_Hab_EDITRF.asc', format='ascii', overwrite =TRUE)
+
+
+
+###################
+## Southern Site ##
+###################
+
+SS_L3_Hab_EDIT.randomForest <- randomForest(as.factor(L3_Hab_EDIT) ~ curv_plan +	slope +	mean3 +	mean5 +	mean10 +
+                       mean25 +	std3 +	std5 +	std10 +	std25 +	range5 +	range10 +	range25 +
+                       hyp10 +	hyp25 +	rugosity +	east +	BPI_B_50 +	BPI_B_100 +	BPI_B_250 +	Depth + BScatter,
+                     data= SSmodel, 
+                     na.action = na.exclude, 
+                     importance = TRUE, 
+                     proximity = TRUE,
+                     ntree = 2500,
+                     nodesize = 1)
+
+print(SS_L3_Hab_EDIT.randomForest)
+print(importance(SS_L3_Hab_EDIT.randomForest,type = 2))
+plot(SS_L3_Hab_EDIT.randomForest)
+importance(SS_L3_Hab_EDIT.randomForest)
+
+sink("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures/SS_L3_Hab_EDIT.txt")
+SS_L3_Hab_EDIT.randomForest 
+sink()
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Figures")
+png(file = 'SS_L3_Hab_EDIT_VarImpPlot.png', width = 8, height = 8, units = 'in', res = 300)
+varImpPlot(SS_L3_Hab_EDIT.randomForest,
+           sort = T,
+           main="Variable Importance")
+dev.off()
+
+SS_L3_Hab_EDITPredImport <- as.data.frame(sort(importance(SS_L3_Hab_EDIT.randomForest)[,4], decreasing = TRUE))
+names(SS_L3_Hab_EDITPredImport) <- c("MeanDecreaseGini")
+write.table(SS_L3_Hab_EDITPredImport, file = "SS_L3_Hab_EDIT_predictor_importance.txt",
+            append = FALSE, sep = "\t", eol = "\n", na = "NA", dec = ".", row.names = TRUE,
+            col.names = TRUE, qmethod = c("escape", "double"))
+
+true.type = as.factor(SStest[,16])
+predicted = predict(SS_L3_Hab_EDIT.randomForest, SStest,type="class")
+table(true.type,predicted)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/BER")
+write.csv(table(true.type,predicted), "20_RF_SS_Lv3_EDIT_MisclassMatrix.csv")
+
+# need to edit, look at http://trevorstephens.com/kaggle-titanic-tutorial/r-part-5-random-forests/
+PredictionSS_L3_Hab_EDIT <- predict(SS_L3_Hab_EDIT.randomForest, SStest)
+submitSS_L3_Hab_EDIT <- data.frame(HabType = SStest$L3_Hab_EDIT, PredictedL3_Hab_EDIT = PredictionSS_L3_Hab_EDIT, X = SStest$Lat, Y = SStest$Long)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/ROCtests")
+write.csv(submitSS_L3_Hab_EDIT, file = "SS_L3_Hab_EDITrandomforest.csv", row.names = FALSE)
+
+
+#############
+## PREDICT ##
+############
+
+SS_L3_Hab_EDIT.rF.predict <- predict(SS_L3_Hab_EDIT.randomForest, SSpoints)
+SS_L3_Hab_EDIT.predict <- as.data.frame(SS_L3_Hab_EDIT.rF.predict)
+pred.SS_L3_Hab_EDIT <- as.data.frame(cbind(SSpoints$Long, SSpoints$Lat, SS_L3_Hab_EDIT.predict))
+pred.SS_L3_Hab_EDIT$SS_L3_Hab_EDIT.rF.predict <- as.numeric(as.character(pred.SS_L3_Hab_EDIT$SS_L3_Hab_EDIT.rF.predict))
+names(pred.SS_L3_Hab_EDIT) <- c("X","Y", "predSS_L3_Hab_EDIT")
+
+
+############
+## OUTPUT ##
+############
+
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/Lv3EDITOutputs")
+
+coordinates(pred.SS_L3_Hab_EDIT) <- ~X+Y
+extSS <- extent(pred.SS_L3_Hab_EDIT)
+rSS <- raster(ext=extSS,res=0.000048500000005447)
+to_asciiSS <- rasterize(pred.SS_L3_Hab_EDIT, rSS, 'predSS_L3_Hab_EDIT')
+writeRaster(to_asciiSS,'SS_L3_Hab_EDITRF.asc', format='ascii', overwrite =TRUE)
+
+```
+
+
+
+
+```{r}
+
+#################
+## AUC CURVES ##
+#################
+
+library(ROCR)
+setwd("C:/OneDrive/C3_Map/RF_Reduced_Outputs/ROCtests")
+
+filenames <- list.files()  
+for (i in filenames) {  
+   name <- gsub("-",".",i)
+   name <- gsub(".csv","",name)  
+   i <- paste(".\\",i,sep="")
+   assign(name,read.csv(i, header=TRUE))
+} 
+
+
+predictL1ALL <- prediction(as.numeric(as.character(L1_Habrandomforest$PredictedL1_Hab)), L1_Habrandomforest$HabType)
+perfL1ALL <- performance(predictL1ALL, measure = "tpr", x.measure = "fpr")
+plot(perfL1ALL, mean = "ROC curve for L1 ALL",
+     col = "blue", lwd = 3)
+abline(a=0, b=1, lwd = 2, lty = 2)
+perf.aucL1ALL <- performance(predictL1ALL, measure = "auc")
+str(perf.aucL1ALL)
+unlist(perf.aucL1ALL@y.values)
+
+predictL1HB <- prediction(as.numeric(as.character(HB_L1_Habrandomforest$PredictedL1_Hab)), HB_L1_Habrandomforest$HabType)
+perfL1HB <- performance(predictL1HB, measure = "tpr", x.measure = "fpr")
+plot(perfL1HB, mean = "ROC curve for L1 HB",
+     col = "blue", lwd = 3)
+abline(a=0, b=1, lwd = 2, lty = 2)
+perf.aucL1HB <- performance(predictL1HB, measure = "auc")
+str(perf.aucL1HB)
+unlist(perf.aucL1HB@y.values)
+
+predictL1TB <- prediction(as.numeric(as.character(TB_L1_Habrandomforest$PredictedL1_Hab)), TB_L1_Habrandomforest$HabType)
+perfL1TB <- performance(predictL1TB, measure = "tpr", x.measure = "fpr")
+plot(perfL1TB, mean = "ROC curve for L1 TB",
+     col = "blue", lwd = 3)
+abline(a=0, b=1, lwd = 2, lty = 2)
+perf.aucL1TB <- performance(predictL1TB, measure = "auc")
+str(perf.aucL1TB)
+unlist(perf.aucL1TB@y.values)
+
+predictL1MG <- prediction(as.numeric(as.character(MG_L1_Habrandomforest$PredictedL1_Hab)), MG_L1_Habrandomforest$HabType)
+perfL1MG <- performance(predictL1MG, measure = "tpr", x.measure = "fpr")
+plot(perfL1MG, mean = "ROC curve for L1 MG",
+     col = "blue", lwd = 3)
+abline(a=0, b=1, lwd = 2, lty = 2)
+perf.aucL1MG <- performance(predictL1MG, measure = "auc")
+str(perf.aucL1MG)
+unlist(perf.aucL1MG@y.values)
+
+predictL1SS <- prediction(as.numeric(as.character(SS_L1_Habrandomforest$PredictedL1_Hab)), SS_L1_Habrandomforest$HabType)
+perfL1SS <- performance(predictL1SS, measure = "tpr", x.measure = "fpr")
+plot(perfL1SS, mean = "ROC curve for L1 SS",
+     col = "blue", lwd = 3)
+abline(a=0, b=1, lwd = 2, lty = 2)
+perf.aucL1SS <- performance(predictL1SS, measure = "auc")
+str(perf.aucL1SS)
+unlist(perf.aucL1SS@y.values)
+
+
+
+
+
+
+```
+
+
